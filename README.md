@@ -33,6 +33,7 @@ export_vrml.patch:
         + fixed bug in PCB text export (premature return resulting
           in text not rendered)
         + changed some functions to 'static' to reduce name pollution
+        + changed 'errno' to 'errorID' in vrml_board.h
 
 export_idf.patch: [DEPRECATED; code is now in KiCad source since rev. 4600]
     Adds basic IDFv3 export. At this stage only the board outline

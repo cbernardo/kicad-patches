@@ -1,6 +1,6 @@
 === modified file 'pcbnew/CMakeLists.txt'
 --- pcbnew/CMakeLists.txt	2014-01-02 09:26:03 +0000
-+++ pcbnew/CMakeLists.txt	2014-01-03 23:55:15 +0000
++++ pcbnew/CMakeLists.txt	2014-01-05 21:21:37 +0000
 @@ -177,6 +177,7 @@
      export_gencad.cpp
      export_idf.cpp
@@ -12,7 +12,7 @@
 
 === modified file 'pcbnew/export_vrml.cpp'
 --- pcbnew/export_vrml.cpp	2013-05-05 07:17:48 +0000
-+++ pcbnew/export_vrml.cpp	2014-01-04 06:15:36 +0000
++++ pcbnew/export_vrml.cpp	2014-01-05 21:21:37 +0000
 @@ -22,6 +22,44 @@
   * or you may write to the Free Software Foundation, Inc.,
   * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
@@ -2063,7 +2063,7 @@
 
 === added file 'pcbnew/vrml_board.cpp'
 --- pcbnew/vrml_board.cpp	1970-01-01 00:00:00 +0000
-+++ pcbnew/vrml_board.cpp	2014-01-03 23:57:13 +0000
++++ pcbnew/vrml_board.cpp	2014-01-05 21:21:37 +0000
 @@ -0,0 +1,1501 @@
 +/*
 + * file: vrml_board.cpp
@@ -3569,7 +3569,7 @@
 
 === added file 'pcbnew/vrml_board.h'
 --- pcbnew/vrml_board.h	1970-01-01 00:00:00 +0000
-+++ pcbnew/vrml_board.h	2014-01-03 23:57:13 +0000
++++ pcbnew/vrml_board.h	2014-01-05 21:23:15 +0000
 @@ -0,0 +1,379 @@
 +/*
 + * file: vrml_board.h
@@ -3915,7 +3915,7 @@
 +     * Function SetGLError
 +     * sets the error message according to the specified OpenGL error
 +     */
-+    void SetGLError( GLenum errno );
++    void SetGLError( GLenum errorID );
 +
 +    /**
 +     * Function Import
