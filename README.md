@@ -3,7 +3,7 @@ kicad-patches
 
 Patches for various improvements to KiCad
 
-Latest BZR head used to create the patches: 4601
+Latest BZR head used to create the patches: 4632
 
 Notes:
 
@@ -18,7 +18,37 @@ Notes:
 
 PATCHES:
 
-export_vrml.patch:
+export_idf3_libs.patch: KiCad Rev. 4632
+    Adds support for IDF component files. Combined with the existing
+    IDF board only export, KiCad now has basic IDF support required for
+    interaction with mechanical designers.
+
+    Other changes:
+	Class S3D_MASTER now protects m_Shape3DName via accessors
+	GetShape3DName() and SetShape3DName(). This was done to
+	aid the implementation of Is3DType() which uses an enum
+        to indicate the type of 3D file based on extension;
+        ".wrl" and ".x3d" == S3D_MASTER::FILE3D_VRML,
+        ".idf" == S3D_MASTER::FILE3D_IDF. This list is expected to
+        grow in the future as MCAD exporters are developed. 
+	There is a small advantage to using an enum in the
+	Is3DType() function; any routine invoking the function
+        can pass the enum S3D_MASTER::FILE3D_UNKNOWN to check if
+        the filename has an extension currently recognized by
+        S3D_MASTER. Another advantage is that the extension
+        comparison is done only once when the file name is set.
+        If Is3DType() used explicit extension comparisons then we
+        would either have to pass a list of extensions to the
+        function or we would need to call the function multiple
+        times in the case of VRML related files (*.wrl,*.x3d).
+	Also, in the future an MCAD exporter may wish to access
+        the enum via an accessor so that the value can be used
+        in a switch() statement.
+
+
+DEPRECATED PATCHES:
+
+export_vrml.patch: [DEPRECATED; code is KiCad source since rev. 4611]
     Improvements to the VRML export function.
     + the board is exported
     + somewhat realistic coloring is used
