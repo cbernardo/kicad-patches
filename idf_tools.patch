@@ -1,0 +1,3250 @@
+=== modified file 'CMakeLists.txt'
+--- CMakeLists.txt	2014-02-02 21:50:45 +0000
++++ CMakeLists.txt	2014-02-03 02:54:05 +0000
+@@ -513,6 +513,7 @@
+ add_subdirectory( bitmap2component )
+ add_subdirectory( pcb_calculator )
+ add_subdirectory( tools )
++add_subdirectory( utils )
+ add_subdirectory( qa )
+ #add_subdirectory( new )
+ 
+
+=== modified file 'pcbnew/CMakeLists.txt'
+--- pcbnew/CMakeLists.txt	2014-02-02 21:50:45 +0000
++++ pcbnew/CMakeLists.txt	2014-02-03 02:51:50 +0000
+@@ -129,6 +129,7 @@
+     exporters/export_gencad.cpp
+     exporters/export_idf.cpp
+     exporters/export_vrml.cpp
++    exporters/idf_common.cpp
+     exporters/idf.cpp
+     exporters/gen_drill_report_files.cpp
+     exporters/gen_modules_placefile.cpp
+
+=== modified file 'pcbnew/exporters/idf.cpp'
+--- pcbnew/exporters/idf.cpp	2014-01-29 16:42:21 +0000
++++ pcbnew/exporters/idf.cpp	2014-02-03 03:51:34 +0000
+@@ -47,8 +47,6 @@
+ #include <idf.h>
+ #include <build_version.h>
+ 
+-// differences in angle smaller than MIN_ANG are considered equal
+-#define MIN_ANG     (0.01)
+ // minimum drill diameter (nanometers) - 10000 is a 0.01mm drill
+ #define IDF_MIN_DIA ( 10000.0 )
+ 
+@@ -70,280 +68,6 @@
+ 
+ // END: IDF_LIB helper routines
+ 
+-bool IDF_POINT::Matches( const IDF_POINT& aPoint, double aRadius )
+-{
+-    double dx = x - aPoint.x;
+-    double dy = y - aPoint.y;
+-
+-    double d2 = dx * dx + dy * dy;
+-
+-    if( d2 <= aRadius * aRadius )
+-        return true;
+-
+-    return false;
+-}
+-
+-
+-double IDF_POINT::CalcDistance( const IDF_POINT& aPoint ) const
+-{
+-    double dx   = aPoint.x - x;
+-    double dy   = aPoint.y - y;
+-    double dist = sqrt( dx * dx + dy * dy );
+-
+-    return dist;
+-}
+-
+-
+-double IDF3::CalcAngleRad( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
+-{
+-    return atan2( aEndPoint.y - aStartPoint.y, aEndPoint.x - aStartPoint.x );
+-}
+-
+-
+-double IDF3::CalcAngleDeg( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
+-{
+-    double ang = CalcAngleRad( aStartPoint, aEndPoint );
+-
+-    // round to thousandths of a degree
+-    int iang = int (ang / M_PI * 1800000.0);
+-
+-    ang = iang / 10000.0;
+-
+-    return ang;
+-}
+-
+-
+-IDF_SEGMENT::IDF_SEGMENT()
+-{
+-    angle = 0.0;
+-    offsetAngle = 0.0;
+-    radius = 0.0;
+-}
+-
+-
+-IDF_SEGMENT::IDF_SEGMENT( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
+-{
+-    angle = 0.0;
+-    offsetAngle = 0.0;
+-    radius = 0.0;
+-    startPoint = aStartPoint;
+-    endPoint = aEndPoint;
+-}
+-
+-
+-IDF_SEGMENT::IDF_SEGMENT( const IDF_POINT& aStartPoint,
+-        const IDF_POINT& aEndPoint,
+-        double aAngle,
+-        bool aFromKicad )
+-{
+-    double diff = abs( aAngle ) - 360.0;
+-
+-    if( ( diff < MIN_ANG
+-          && diff > -MIN_ANG ) || ( aAngle < MIN_ANG && aAngle > -MIN_ANG ) || (!aFromKicad) )
+-    {
+-        angle = 0.0;
+-        startPoint = aStartPoint;
+-        endPoint = aEndPoint;
+-
+-        if( diff < MIN_ANG && diff > -MIN_ANG )
+-        {
+-            angle = 360.0;
+-            center = aStartPoint;
+-            offsetAngle = 0.0;
+-            radius = aStartPoint.CalcDistance( aEndPoint );
+-        }
+-        else if( aAngle < MIN_ANG && aAngle > -MIN_ANG )
+-        {
+-            CalcCenterAndRadius();
+-        }
+-
+-        return;
+-    }
+-
+-    // we need to convert from the KiCad arc convention
+-    angle = aAngle;
+-
+-    center = aStartPoint;
+-
+-    offsetAngle = IDF3::CalcAngleDeg( aStartPoint, aEndPoint );
+-
+-    radius = aStartPoint.CalcDistance( aEndPoint );
+-
+-    startPoint = aEndPoint;
+-
+-    double ang = offsetAngle + aAngle;
+-    ang = (ang / 180.0) * M_PI;
+-
+-    endPoint.x  = ( radius * cos( ang ) ) + center.x;
+-    endPoint.y  = ( radius * sin( ang ) ) + center.y;
+-}
+-
+-
+-bool IDF_SEGMENT::MatchesStart( const IDF_POINT& aPoint, double aRadius )
+-{
+-    return startPoint.Matches( aPoint, aRadius );
+-}
+-
+-
+-bool IDF_SEGMENT::MatchesEnd( const IDF_POINT& aPoint, double aRadius )
+-{
+-    return endPoint.Matches( aPoint, aRadius );
+-}
+-
+-
+-void IDF_SEGMENT::CalcCenterAndRadius( void )
+-{
+-    // NOTE:  this routine does not check if the points are the same
+-    // or too close to be sensible in a production setting.
+-
+-    double offAng = IDF3::CalcAngleRad( startPoint, endPoint );
+-    double d = startPoint.CalcDistance( endPoint ) / 2.0;
+-    double xm   = ( startPoint.x + endPoint.x ) * 0.5;
+-    double ym   = ( startPoint.y + endPoint.y ) * 0.5;
+-
+-    radius = d / sin( angle * M_PI / 180.0 );
+-
+-    if( radius < 0.0 )
+-    {
+-        radius = -radius;
+-    }
+-
+-    // calculate the height of the triangle with base d and hypotenuse r
+-    double dh2 = radius * radius - d * d;
+-
+-    if( dh2 < 0 )
+-    {
+-        // this should only ever happen due to rounding errors when r == d
+-        dh2 = 0;
+-    }
+-
+-    double h = sqrt( dh2 );
+-
+-    if( angle > 0.0 )
+-        offAng += M_PI2;
+-    else
+-        offAng -= M_PI2;
+-
+-    if( ( angle > M_PI ) || ( angle < -M_PI ) )
+-        offAng += M_PI;
+-
+-    center.x = h * cos( offAng ) + xm;
+-    center.y = h * sin( offAng ) + ym;
+-
+-    offsetAngle = IDF3::CalcAngleDeg( center, startPoint );
+-}
+-
+-
+-bool IDF_SEGMENT::IsCircle( void )
+-{
+-    double diff = abs( angle ) - 360.0;
+-
+-    if( ( diff < MIN_ANG ) && ( diff > -MIN_ANG ) )
+-        return true;
+-
+-    return false;
+-}
+-
+-
+-double IDF_SEGMENT::GetMinX( void )
+-{
+-    if( angle == 0.0 )
+-        return std::min( startPoint.x, endPoint.x );
+-
+-    // Calculate the leftmost point of the circle or arc
+-
+-    if( IsCircle() )
+-    {
+-        // if only everything were this easy
+-        return center.x - radius;
+-    }
+-
+-    // cases:
+-    // 1. CCW arc: if offset + included angle >= 180 deg then
+-    // MinX = center.x - radius, otherwise MinX is the
+-    // same as for the case of a line.
+-    // 2. CW arc: if offset + included angle <= -180 deg then
+-    // MinX = center.x - radius, otherwise MinX is the
+-    // same as for the case of a line.
+-
+-    if( angle > 0 )
+-    {
+-        // CCW case
+-        if( ( offsetAngle + angle ) >= 180.0 )
+-        {
+-            return center.x - radius;
+-        }
+-        else
+-        {
+-            return std::min( startPoint.x, endPoint.x );
+-        }
+-    }
+-
+-    // CW case
+-    if( ( offsetAngle + angle ) <= -180.0 )
+-    {
+-        return center.x - radius;
+-    }
+-
+-    return std::min( startPoint.x, endPoint.x );
+-}
+-
+-
+-void IDF_SEGMENT::SwapEnds( void )
+-{
+-    if( IsCircle() )
+-    {
+-        // reverse the direction
+-        angle = -angle;
+-        return;
+-    }
+-
+-    IDF_POINT tmp = startPoint;
+-    startPoint = endPoint;
+-    endPoint = tmp;
+-
+-    if( ( angle < MIN_ANG ) && ( angle > -MIN_ANG ) )
+-        return;         // nothing more to do
+-
+-    // change the direction of the arc
+-    angle = -angle;
+-    // calculate the new offset angle
+-    offsetAngle = IDF3::CalcAngleDeg( center, startPoint );
+-}
+-
+-
+-void IDF_OUTLINE::push( IDF_SEGMENT* item )
+-{
+-    if( !outline.empty() )
+-    {
+-        if( item->IsCircle() )
+-        {
+-            // not allowed
+-            wxString msg = wxT( "INVALID GEOMETRY: a circle is being added to a non-empty outline" );
+-            THROW_IO_ERROR( msg );
+-        }
+-        else
+-        {
+-            if( outline.back()->IsCircle() )
+-            {
+-                // we can't add lines to a circle
+-                wxString msg = wxT( "INVALID GEOMETRY: a line is being added to a circular outline" );
+-                THROW_IO_ERROR( msg );
+-            }
+-            else if( !item->MatchesStart( outline.back()->endPoint ) )
+-            {
+-                // startPoint[N] != endPoint[N -1]
+-                wxString msg = wxT( "INVALID GEOMETRY: disjoint segments" );
+-                THROW_IO_ERROR( msg );
+-            }
+-        }
+-    }
+-
+-    outline.push_back( item );
+-    dir += ( outline.back()->endPoint.x - outline.back()->startPoint.x )
+-           * ( outline.back()->endPoint.y + outline.back()->startPoint.y );
+-}
+-
+ 
+ IDF_DRILL_DATA::IDF_DRILL_DATA( double aDrillDia, double aPosX, double aPosY,
+         IDF3::KEY_PLATING aPlating,
+@@ -881,141 +605,6 @@
+ }
+ 
+ 
+-void IDF3::GetOutline( std::list<IDF_SEGMENT*>& aLines,
+-        IDF_OUTLINE& aOutline )
+-{
+-    aOutline.Clear();
+-
+-    // NOTE: To tell if the point order is CCW or CW,
+-    // sum all:  (endPoint.X[n] - startPoint.X[n])*(endPoint[n] + startPoint.Y[n])
+-    // If the result is >0, the direction is CW, otherwise
+-    // it is CCW. Note that the result cannot be 0 unless
+-    // we have a bounded area of 0.
+-
+-    // First we find the segment with the leftmost point
+-    std::list<IDF_SEGMENT*>::iterator bl    = aLines.begin();
+-    std::list<IDF_SEGMENT*>::iterator el    = aLines.end();
+-    std::list<IDF_SEGMENT*>::iterator idx   = bl++;       // iterator for the object with minX
+-
+-    double minx = (*idx)->GetMinX();
+-    double curx;
+-
+-    while( bl != el )
+-    {
+-        curx = (*bl)->GetMinX();
+-
+-        if( curx < minx )
+-        {
+-            minx = curx;
+-            idx = bl;
+-        }
+-
+-        ++bl;
+-    }
+-
+-    aOutline.push( *idx );
+-    aLines.erase( idx );
+-
+-    // If the item is a circle then we're done
+-    if( aOutline.front()->IsCircle() )
+-        return;
+-
+-    // Assemble the loop
+-    bool complete = false;  // set if loop is complete
+-    bool matched;           // set if a segment's end point was matched
+-
+-    while( !complete )
+-    {
+-        matched = false;
+-        bl  = aLines.begin();
+-        el  = aLines.end();
+-
+-        while( bl != el && !matched )
+-        {
+-            if( (*bl)->MatchesStart( aOutline.back()->endPoint ) )
+-            {
+-                if( (*bl)->IsCircle() )
+-                {
+-                    // a circle on the perimeter is pathological but we just ignore it
+-                    ++bl;
+-                }
+-                else
+-                {
+-                    matched = true;
+-                    aOutline.push( *bl );
+-                    aLines.erase( bl );
+-                }
+-
+-                continue;
+-            }
+-
+-            ++bl;
+-        }
+-
+-        if( !matched )
+-        {
+-            // attempt to match the end points
+-            bl  = aLines.begin();
+-            el  = aLines.end();
+-
+-            while( bl != el && !matched )
+-            {
+-                if( (*bl)->MatchesEnd( aOutline.back()->endPoint ) )
+-                {
+-                    if( (*bl)->IsCircle() )
+-                    {
+-                        // a circle on the perimeter is pathological but we just ignore it
+-                        ++bl;
+-                    }
+-                    else
+-                    {
+-                        matched = true;
+-                        (*bl)->SwapEnds();
+-                        aOutline.push( *bl );
+-                        aLines.erase( bl );
+-                    }
+-
+-                    continue;
+-                }
+-
+-                ++bl;
+-            }
+-        }
+-
+-        if( !matched )
+-        {
+-            // still no match - attempt to close the loop
+-            if( (aOutline.size() > 1) || ( aOutline.front()->angle < -MIN_ANG )
+-                || ( aOutline.front()->angle > MIN_ANG ) )
+-            {
+-                // close the loop
+-                IDF_SEGMENT* seg = new IDF_SEGMENT( aOutline.back()->endPoint,
+-                        aOutline.front()->startPoint );
+-
+-                if( seg )
+-                {
+-                    complete = true;
+-                    aOutline.push( seg );
+-                    break;
+-                }
+-            }
+-
+-            // the outline is bad; drop the segments
+-            aOutline.Clear();
+-
+-            return;
+-        }
+-
+-        // check if the loop is complete
+-        if( aOutline.front()->MatchesStart( aOutline.back()->endPoint ) )
+-        {
+-            complete = true;
+-            break;
+-        }
+-    }
+-}
+-
+-
+ IDF_LIB::~IDF_LIB()
+ {
+     while( !components.empty() )
+
+=== modified file 'pcbnew/exporters/idf.h'
+--- pcbnew/exporters/idf.h	2014-01-29 16:42:21 +0000
++++ pcbnew/exporters/idf.h	2014-02-03 02:55:29 +0000
+@@ -31,269 +31,7 @@
+ #include <wx/string.h>
+ #include <set>
+ #include <string>
+-
+-#ifndef M_PI
+-#define M_PI 3.1415926535897932384626433832795028841
+-#endif
+-
+-#ifndef M_PI2
+-#define M_PI2 ( M_PI / 2.0 )
+-#endif
+-
+-#ifndef M_PI4
+-#define M_PI4 ( M_PI / 4.0 )
+-#endif
+-
+-class IDF_POINT;
+-class IDF_SEGMENT;
+-class IDF_DRILL_DATA;
+-class IDF_OUTLINE;
+-class IDF_LIB;
+-
+-namespace IDF3 {
+-enum KEY_OWNER
+-{
+-    UNOWNED = 0,        // < either MCAD or ECAD may modify a feature
+-    MCAD,               // < only MCAD may modify a feature
+-    ECAD                // < only ECAD may modify a feature
+-};
+-
+-enum KEY_HOLETYPE
+-{
+-    PIN = 0,            // < drill hole is for a pin
+-    VIA,                // < drill hole is for a via
+-    MTG,                // < drill hole is for mounting
+-    TOOL,               // < drill hole is for tooling
+-    OTHER               // < user has specified a custom type
+-};
+-
+-enum KEY_PLATING
+-{
+-    PTH = 0,            // < Plate-Through Hole
+-    NPTH                // < Non-Plate-Through Hole
+-};
+-
+-enum KEY_REFDES
+-{
+-    BOARD = 0,          // < feature is associated with the board
+-    NOREFDES,           // < feature is associated with a component with no RefDes
+-    PANEL,              // < feature is associated with an IDF panel
+-    REFDES              // < reference designator as assigned by the CAD software
+-};
+-
+-// calculate the angle between the horizon and the segment aStartPoint to aEndPoint
+-double  CalcAngleRad( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
+-double  CalcAngleDeg( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
+-
+-// take contiguous elements from 'lines' and stuff them into 'outline'
+-void GetOutline( std::list<IDF_SEGMENT*>& aLines,
+-        IDF_OUTLINE& aOutline );
+-}
+-
+-
+-/**
+- * @Struct IDF_POINT
+- * represents a vector of three doubles; this may be represent
+- * a point in space, or scaling, translation or rotation along
+- * three axes.
+- */
+-struct IDF_VECTOR
+-{
+-    double x;
+-    double y;
+-    double z;
+-};
+-
+-
+-/**
+- * @Class IDF_POINT
+- * represents a point
+- */
+-class IDF_POINT
+-{
+-public:
+-    double x;   // < X coordinate
+-    double y;   // < Y coordinate
+-
+-    IDF_POINT()
+-    {
+-        x = 0.0;
+-        y = 0.0;
+-    }
+-
+-    /**
+-     * Function Matches()
+-     * returns true if the given coordinate point is within the given radius
+-     * of the point.
+-     * @param aPoint : coordinates of the point being compared
+-     * @param aRadius : radius within which the points are considered the same
+-     */
+-    bool    Matches( const IDF_POINT& aPoint, double aRadius = 1e-5 );
+-    double  CalcDistance( const IDF_POINT& aPoint ) const;
+-};
+-
+-
+-/**
+- * @Class IDF_SEGMENT
+- * represents a geometry segment as used in IDFv3 outlines
+- */
+-class IDF_SEGMENT
+-{
+-private:
+-    /**
+-     * Function CalcCenterAndRadius()
+-     * Calculates the center, radius, and angle between center and start point given the
+-     * IDF compliant points and included angle.
+-     * @var startPoint, @var endPoint, and @var angle must be set prior as per IDFv3
+-     */
+-    void CalcCenterAndRadius( void );
+-
+-public:
+-    IDF_POINT startPoint;   // starting point in IDF coordinates
+-    IDF_POINT endPoint;     // end point in IDF coordinates
+-    IDF_POINT   center;     // center of an arc or circle; used primarily for calculating min X
+-    double  angle;          // included angle (degrees) according to IDFv3 specification
+-    double  offsetAngle;    // angle between center and start of arc; used to speed up some calcs.
+-    double  radius;         // radius of the arc or circle; used to speed up some calcs.
+-
+-    /**
+-     * Function IDF_SEGMENT()
+-     * initializes the internal variables
+-     */
+-    IDF_SEGMENT();
+-
+-    /**
+-     * Function IDF_SEGMENT( start, end )
+-     * creates a straight segment
+-     */
+-    IDF_SEGMENT( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
+-
+-    /**
+-     * Function IDF_SEGMENT( start, end )
+-     * creates a straight segment, arc, or circle depending on the angle
+-     * @param aStartPoint : start point (center if using KiCad convention, otherwise IDF convention)
+-     * @param aEndPoint : end point (start of arc if using KiCad convention, otherwise IDF convention)
+-     * @param aAngle : included angle; the KiCad convention is equivalent to the IDF convention
+-     * @param fromKicad : set true if we need to convert from KiCad to IDF convention
+-     */
+-    IDF_SEGMENT( const IDF_POINT& aStartPoint,
+-            const IDF_POINT& aEndPoint,
+-            double aAngle,
+-            bool aFromKicad );
+-
+-    /**
+-     * Function MatchesStart()
+-     * returns true if the given coordinate is within a radius 'rad'
+-     * of the start point.
+-     * @param aPoint : coordinates of the point being compared
+-     * @param aRadius : radius within which the points are considered the same
+-     */
+-    bool MatchesStart( const IDF_POINT& aPoint, double aRadius = 1e-3 );
+-
+-    /**
+-     * Function MatchesEnd()
+-     * returns true if the given coordinate is within a radius 'rad'
+-     * of the end point.
+-     * @param aPoint : coordinates of the point being compared
+-     * @param aRadius : radius within which the points are considered the same
+-     */
+-    bool MatchesEnd( const IDF_POINT& aPoint, double aRadius = 1e-3 );
+-
+-    /**
+-     * Function IsCircle()
+-     * returns true if this segment is a circle
+-     */
+-    bool IsCircle( void );
+-
+-    /**
+-     * Function GetMinX()
+-     * returns the minimum X coordinate of this segment
+-     */
+-    double GetMinX( void );
+-
+-    /**
+-     * Function SwapEnds()
+-     * Swaps the start and end points and alters internal
+-     * variables as necessary for arcs
+-     */
+-    void SwapEnds( void );
+-};
+-
+-
+-/**
+- * @Class IDF_OUTLINE
+- * contains segment and winding information for an IDF outline
+- */
+-class IDF_OUTLINE
+-{
+-private:
+-    double dir;
+-    std::list<IDF_SEGMENT*> outline;
+-
+-public:
+-    IDF_OUTLINE() { dir = 0.0; }
+-    ~IDF_OUTLINE() { Clear(); }
+-
+-    // returns true if the current list of points represents a counterclockwise winding
+-    bool IsCCW( void )
+-    {
+-        if( dir > 0.0 )
+-            return false;
+-
+-        return true;
+-    }
+-
+-    // clears the internal list of outline segments
+-    void Clear( void )
+-    {
+-        dir = 0.0;
+-
+-        while( !outline.empty() )
+-        {
+-            delete outline.front();
+-            outline.pop_front();
+-        }
+-    }
+-
+-    // returns the size of the internal segment list
+-    size_t size( void )
+-    {
+-        return outline.size();
+-    }
+-
+-    // returns true if the internal segment list is empty
+-    bool empty( void )
+-    {
+-        return outline.empty();
+-    }
+-
+-    // return the front() of the internal segment list
+-    IDF_SEGMENT*& front( void )
+-    {
+-        return outline.front();
+-    }
+-
+-    // return the back() of the internal segment list
+-    IDF_SEGMENT*& back( void )
+-    {
+-        return outline.back();
+-    }
+-
+-    // return the begin() iterator of the internal segment list
+-    std::list<IDF_SEGMENT*>::iterator begin( void )
+-    {
+-        return outline.begin();
+-    }
+-
+-    // return the end() iterator of the internal segment list
+-    std::list<IDF_SEGMENT*>::iterator end( void )
+-    {
+-        return outline.end();
+-    }
+-
+-    // push a segment onto the internal list
+-    void push( IDF_SEGMENT* item );
+-};
++#include <idf_common.h>
+ 
+ 
+ /**
+
+=== added file 'pcbnew/exporters/idf_common.cpp'
+--- pcbnew/exporters/idf_common.cpp	1970-01-01 00:00:00 +0000
++++ pcbnew/exporters/idf_common.cpp	2014-02-03 02:30:47 +0000
+@@ -0,0 +1,484 @@
++/**
++ * file: idf_common.cpp
++ *
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright (C) 2013-2014  Cirilo Bernardo
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you may find one here:
++ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
++ * or you may search the http://www.gnu.org website for the version 2 license,
++ * or you may write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++ */
++
++#include <list>
++#include <string>
++#include <iostream>
++#include <cstdio>
++#include <cmath>
++#include <richio.h>
++#include <idf_common.h>
++#include <build_version.h>
++
++#ifdef DEBUG_IDF
++void IDF3::PrintSeg( IDF_SEGMENT* aSegment )
++{
++    if( aSegment->IsCircle() )
++    {
++        fprintf(stdout, "printSeg(): CIRCLE: C(%.3f, %.3f) P(%.3f, %.3f) rad. %.3f\n",
++                aSegment->startPoint.x, aSegment->startPoint.y,
++                aSegment->endPoint.x, aSegment->endPoint.y,
++                aSegment->radius );
++        return;
++    }
++
++    if( aSegment->angle < -MIN_ANG || aSegment->angle > MIN_ANG )
++    {
++        fprintf(stdout, "printSeg(): ARC: p1(%.3f, %.3f) p2(%.3f, %.3f) ang. %.3f\n",
++                aSegment->startPoint.x, aSegment->startPoint.y,
++                aSegment->endPoint.x, aSegment->endPoint.y,
++                aSegment->angle );
++        return;
++    }
++
++    fprintf(stdout, "printSeg(): LINE: p1(%.3f, %.3f) p2(%.3f, %.3f)\n",
++            aSegment->startPoint.x, aSegment->startPoint.y,
++            aSegment->endPoint.x, aSegment->endPoint.y );
++
++    return;
++}
++#endif
++
++
++bool IDF_POINT::Matches( const IDF_POINT& aPoint, double aRadius )
++{
++    double dx = x - aPoint.x;
++    double dy = y - aPoint.y;
++
++    double d2 = dx * dx + dy * dy;
++
++    if( d2 <= aRadius * aRadius )
++        return true;
++
++    return false;
++}
++
++
++double IDF_POINT::CalcDistance( const IDF_POINT& aPoint ) const
++{
++    double dx   = aPoint.x - x;
++    double dy   = aPoint.y - y;
++    double dist = sqrt( dx * dx + dy * dy );
++
++    return dist;
++}
++
++
++double IDF3::CalcAngleRad( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
++{
++    return atan2( aEndPoint.y - aStartPoint.y, aEndPoint.x - aStartPoint.x );
++}
++
++
++double IDF3::CalcAngleDeg( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
++{
++    double ang = CalcAngleRad( aStartPoint, aEndPoint );
++
++    // round to thousandths of a degree
++    int iang = int (ang / M_PI * 1800000.0);
++
++    ang = iang / 10000.0;
++
++    return ang;
++}
++
++
++void IDF3::GetOutline( std::list<IDF_SEGMENT*>& aLines,
++                       IDF_OUTLINE& aOutline )
++{
++    aOutline.Clear();
++
++    // NOTE: To tell if the point order is CCW or CW,
++    // sum all:  (endPoint.X[n] - startPoint.X[n])*(endPoint[n] + startPoint.Y[n])
++    // If the result is >0, the direction is CW, otherwise
++    // it is CCW. Note that the result cannot be 0 unless
++    // we have a bounded area of 0.
++
++    // First we find the segment with the leftmost point
++    std::list<IDF_SEGMENT*>::iterator bl    = aLines.begin();
++    std::list<IDF_SEGMENT*>::iterator el    = aLines.end();
++    std::list<IDF_SEGMENT*>::iterator idx   = bl++;       // iterator for the object with minX
++
++    double minx = (*idx)->GetMinX();
++    double curx;
++
++    while( bl != el )
++    {
++        curx = (*bl)->GetMinX();
++
++        if( curx < minx )
++        {
++            minx = curx;
++            idx = bl;
++        }
++
++        ++bl;
++    }
++
++    aOutline.push( *idx );
++#ifdef DEBUG_IDF
++    PrintSeg( *idx );
++#endif
++    aLines.erase( idx );
++
++    // If the item is a circle then we're done
++    if( aOutline.front()->IsCircle() )
++        return;
++
++    // Assemble the loop
++    bool complete = false;  // set if loop is complete
++    bool matched;           // set if a segment's end point was matched
++
++    while( !complete )
++    {
++        matched = false;
++        bl  = aLines.begin();
++        el  = aLines.end();
++
++        while( bl != el && !matched )
++        {
++            if( (*bl)->MatchesStart( aOutline.back()->endPoint ) )
++            {
++                if( (*bl)->IsCircle() )
++                {
++                    // a circle on the perimeter is pathological but we just ignore it
++                    ++bl;
++                }
++                else
++                {
++                    matched = true;
++#ifdef DEBUG_IDF
++                    PrintSeg( *bl );
++#endif
++                    aOutline.push( *bl );
++                    aLines.erase( bl );
++                }
++
++                continue;
++            }
++
++            ++bl;
++        }
++
++        if( !matched )
++        {
++            // attempt to match the end points
++            bl  = aLines.begin();
++            el  = aLines.end();
++
++            while( bl != el && !matched )
++            {
++                if( (*bl)->MatchesEnd( aOutline.back()->endPoint ) )
++                {
++                    if( (*bl)->IsCircle() )
++                    {
++                        // a circle on the perimeter is pathological but we just ignore it
++                        ++bl;
++                    }
++                    else
++                    {
++                        matched = true;
++                        (*bl)->SwapEnds();
++#ifdef DEBUG_IDF
++                        printSeg( *bl );
++#endif
++                        aOutline.push( *bl );
++                        aLines.erase( bl );
++                    }
++
++                    continue;
++                }
++
++                ++bl;
++            }
++        }
++
++        if( !matched )
++        {
++            // still no match - attempt to close the loop
++            if( (aOutline.size() > 1) || ( aOutline.front()->angle < -MIN_ANG )
++                || ( aOutline.front()->angle > MIN_ANG ) )
++            {
++                // close the loop
++                IDF_SEGMENT* seg = new IDF_SEGMENT( aOutline.back()->endPoint,
++                                                    aOutline.front()->startPoint );
++
++                if( seg )
++                {
++                    complete = true;
++#ifdef DEBUG_IDF
++                    printSeg( seg );
++#endif
++                    aOutline.push( seg );
++                    break;
++                }
++            }
++
++            // the outline is bad; drop the segments
++            aOutline.Clear();
++
++            return;
++        }
++
++        // check if the loop is complete
++        if( aOutline.front()->MatchesStart( aOutline.back()->endPoint ) )
++        {
++            complete = true;
++            break;
++        }
++    }
++}
++
++
++IDF_SEGMENT::IDF_SEGMENT()
++{
++    angle = 0.0;
++    offsetAngle = 0.0;
++    radius = 0.0;
++}
++
++
++IDF_SEGMENT::IDF_SEGMENT( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
++{
++    angle = 0.0;
++    offsetAngle = 0.0;
++    radius = 0.0;
++    startPoint = aStartPoint;
++    endPoint = aEndPoint;
++}
++
++
++IDF_SEGMENT::IDF_SEGMENT( const IDF_POINT& aStartPoint,
++                          const IDF_POINT& aEndPoint,
++                          double aAngle,
++                          bool aFromKicad )
++{
++    double diff = abs( aAngle ) - 360.0;
++
++    if( ( diff < MIN_ANG
++        && diff > -MIN_ANG ) || ( aAngle < MIN_ANG && aAngle > -MIN_ANG ) || (!aFromKicad) )
++    {
++        angle = 0.0;
++        startPoint = aStartPoint;
++        endPoint = aEndPoint;
++
++        if( diff < MIN_ANG && diff > -MIN_ANG )
++        {
++            angle = 360.0;
++            center = aStartPoint;
++            offsetAngle = 0.0;
++            radius = aStartPoint.CalcDistance( aEndPoint );
++        }
++        else if( aAngle < MIN_ANG && aAngle > -MIN_ANG )
++        {
++            CalcCenterAndRadius();
++        }
++
++        return;
++    }
++
++    // we need to convert from the KiCad arc convention
++    angle = aAngle;
++
++    center = aStartPoint;
++
++    offsetAngle = IDF3::CalcAngleDeg( aStartPoint, aEndPoint );
++
++    radius = aStartPoint.CalcDistance( aEndPoint );
++
++    startPoint = aEndPoint;
++
++    double ang = offsetAngle + aAngle;
++    ang = (ang / 180.0) * M_PI;
++
++    endPoint.x  = ( radius * cos( ang ) ) + center.x;
++    endPoint.y  = ( radius * sin( ang ) ) + center.y;
++}
++
++
++bool IDF_SEGMENT::MatchesStart( const IDF_POINT& aPoint, double aRadius )
++{
++    return startPoint.Matches( aPoint, aRadius );
++}
++
++
++bool IDF_SEGMENT::MatchesEnd( const IDF_POINT& aPoint, double aRadius )
++{
++    return endPoint.Matches( aPoint, aRadius );
++}
++
++
++void IDF_SEGMENT::CalcCenterAndRadius( void )
++{
++    // NOTE:  this routine does not check if the points are the same
++    // or too close to be sensible in a production setting.
++
++    double offAng = IDF3::CalcAngleRad( startPoint, endPoint );
++    double d = startPoint.CalcDistance( endPoint ) / 2.0;
++    double xm   = ( startPoint.x + endPoint.x ) * 0.5;
++    double ym   = ( startPoint.y + endPoint.y ) * 0.5;
++
++    radius = d / sin( angle * M_PI / 180.0 );
++
++    if( radius < 0.0 )
++    {
++        radius = -radius;
++    }
++
++    // calculate the height of the triangle with base d and hypotenuse r
++    double dh2 = radius * radius - d * d;
++
++    if( dh2 < 0 )
++    {
++        // this should only ever happen due to rounding errors when r == d
++        dh2 = 0;
++    }
++
++    double h = sqrt( dh2 );
++
++    if( angle > 0.0 )
++        offAng += M_PI2;
++    else
++        offAng -= M_PI2;
++
++    if( ( angle > M_PI ) || ( angle < -M_PI ) )
++        offAng += M_PI;
++
++    center.x = h * cos( offAng ) + xm;
++    center.y = h * sin( offAng ) + ym;
++
++    offsetAngle = IDF3::CalcAngleDeg( center, startPoint );
++}
++
++
++bool IDF_SEGMENT::IsCircle( void )
++{
++    double diff = abs( angle ) - 360.0;
++
++    if( ( diff < MIN_ANG ) && ( diff > -MIN_ANG ) )
++        return true;
++
++    return false;
++}
++
++
++double IDF_SEGMENT::GetMinX( void )
++{
++    if( angle == 0.0 )
++        return std::min( startPoint.x, endPoint.x );
++
++    // Calculate the leftmost point of the circle or arc
++
++    if( IsCircle() )
++    {
++        // if only everything were this easy
++        return center.x - radius;
++    }
++
++    // cases:
++    // 1. CCW arc: if offset + included angle >= 180 deg then
++    // MinX = center.x - radius, otherwise MinX is the
++    // same as for the case of a line.
++    // 2. CW arc: if offset + included angle <= -180 deg then
++    // MinX = center.x - radius, otherwise MinX is the
++    // same as for the case of a line.
++
++    if( angle > 0 )
++    {
++        // CCW case
++        if( ( offsetAngle + angle ) >= 180.0 )
++        {
++            return center.x - radius;
++        }
++        else
++        {
++            return std::min( startPoint.x, endPoint.x );
++        }
++    }
++
++    // CW case
++    if( ( offsetAngle + angle ) <= -180.0 )
++    {
++        return center.x - radius;
++    }
++
++    return std::min( startPoint.x, endPoint.x );
++}
++
++
++void IDF_SEGMENT::SwapEnds( void )
++{
++    if( IsCircle() )
++    {
++        // reverse the direction
++        angle = -angle;
++        return;
++    }
++
++    IDF_POINT tmp = startPoint;
++    startPoint = endPoint;
++    endPoint = tmp;
++
++    if( ( angle < MIN_ANG ) && ( angle > -MIN_ANG ) )
++        return;         // nothing more to do
++
++        // change the direction of the arc
++        angle = -angle;
++    // calculate the new offset angle
++    offsetAngle = IDF3::CalcAngleDeg( center, startPoint );
++}
++
++
++void IDF_OUTLINE::push( IDF_SEGMENT* item )
++{
++    if( !outline.empty() )
++    {
++        if( item->IsCircle() )
++        {
++            // not allowed
++            wxString msg = wxT( "INVALID GEOMETRY: a circle is being added to a non-empty outline" );
++            THROW_IO_ERROR( msg );
++        }
++        else
++        {
++            if( outline.back()->IsCircle() )
++            {
++                // we can't add lines to a circle
++                wxString msg = wxT( "INVALID GEOMETRY: a line is being added to a circular outline" );
++                THROW_IO_ERROR( msg );
++            }
++            else if( !item->MatchesStart( outline.back()->endPoint ) )
++            {
++                // startPoint[N] != endPoint[N -1]
++                wxString msg = wxT( "INVALID GEOMETRY: disjoint segments" );
++                THROW_IO_ERROR( msg );
++            }
++        }
++    }
++
++    outline.push_back( item );
++    dir += ( outline.back()->endPoint.x - outline.back()->startPoint.x )
++    * ( outline.back()->endPoint.y + outline.back()->startPoint.y );
++}
+
+=== added file 'pcbnew/exporters/idf_common.h'
+--- pcbnew/exporters/idf_common.h	1970-01-01 00:00:00 +0000
++++ pcbnew/exporters/idf_common.h	2014-02-03 02:39:33 +0000
+@@ -0,0 +1,290 @@
++/**
++ * @file idf_common.h
++ */
++
++/*
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright (C) 2013-2014  Cirilo Bernardo
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you may find one here:
++ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
++ * or you may search the http://www.gnu.org website for the version 2 license,
++ * or you may write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++ */
++
++#ifndef IDF_COMMON_H
++#define IDF_COMMON_H
++
++#include <list>
++
++#ifndef M_PI
++#define M_PI 3.1415926535897932384626433832795028841
++#endif
++
++#ifndef M_PI2
++#define M_PI2 ( M_PI / 2.0 )
++#endif
++
++#ifndef M_PI4
++#define M_PI4 ( M_PI / 4.0 )
++#endif
++
++// differences in angle smaller than MIN_ANG are considered equal
++#define MIN_ANG     (0.01)
++
++class IDF_POINT;
++class IDF_SEGMENT;
++class IDF_DRILL_DATA;
++class IDF_OUTLINE;
++class IDF_LIB;
++
++namespace IDF3 {
++    enum KEY_OWNER
++    {
++        UNOWNED = 0,        // < either MCAD or ECAD may modify a feature
++        MCAD,               // < only MCAD may modify a feature
++        ECAD                // < only ECAD may modify a feature
++    };
++
++    enum KEY_HOLETYPE
++    {
++        PIN = 0,            // < drill hole is for a pin
++        VIA,                // < drill hole is for a via
++        MTG,                // < drill hole is for mounting
++        TOOL,               // < drill hole is for tooling
++        OTHER               // < user has specified a custom type
++    };
++
++    enum KEY_PLATING
++    {
++        PTH = 0,            // < Plate-Through Hole
++        NPTH                // < Non-Plate-Through Hole
++    };
++
++    enum KEY_REFDES
++    {
++        BOARD = 0,          // < feature is associated with the board
++        NOREFDES,           // < feature is associated with a component with no RefDes
++        PANEL,              // < feature is associated with an IDF panel
++        REFDES              // < reference designator as assigned by the CAD software
++    };
++
++    // calculate the angle between the horizon and the segment aStartPoint to aEndPoint
++    double  CalcAngleRad( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
++    double  CalcAngleDeg( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
++
++    // take contiguous elements from 'lines' and stuff them into 'outline'
++    void GetOutline( std::list<IDF_SEGMENT*>& aLines,
++                     IDF_OUTLINE& aOutline );
++
++#ifdef DEBUG_IDF
++    // prints out segment information for debug purposes
++    void PrintSeg( IDF_SEGMENT* aSegment );
++#endif
++}
++
++
++/**
++ * @Class IDF_POINT
++ * represents a point
++ */
++class IDF_POINT
++{
++public:
++    double x;   // < X coordinate
++    double y;   // < Y coordinate
++
++    IDF_POINT()
++    {
++        x = 0.0;
++        y = 0.0;
++    }
++
++    /**
++     * Function Matches()
++     * returns true if the given coordinate point is within the given radius
++     * of the point.
++     * @param aPoint : coordinates of the point being compared
++     * @param aRadius : radius within which the points are considered the same
++     */
++    bool    Matches( const IDF_POINT& aPoint, double aRadius = 1e-5 );
++    double  CalcDistance( const IDF_POINT& aPoint ) const;
++};
++
++
++/**
++ * @Class IDF_SEGMENT
++ * represents a geometry segment as used in IDFv3 outlines
++ */
++class IDF_SEGMENT
++{
++private:
++    /**
++     * Function CalcCenterAndRadius()
++     * Calculates the center, radius, and angle between center and start point given the
++     * IDF compliant points and included angle.
++     * @var startPoint, @var endPoint, and @var angle must be set prior as per IDFv3
++     */
++    void CalcCenterAndRadius( void );
++
++public:
++    IDF_POINT startPoint;   // starting point in IDF coordinates
++    IDF_POINT endPoint;     // end point in IDF coordinates
++    IDF_POINT   center;     // center of an arc or circle; used primarily for calculating min X
++    double  angle;          // included angle (degrees) according to IDFv3 specification
++    double  offsetAngle;    // angle between center and start of arc; used to speed up some calcs.
++    double  radius;         // radius of the arc or circle; used to speed up some calcs.
++
++    /**
++     * Function IDF_SEGMENT()
++     * initializes the internal variables
++     */
++    IDF_SEGMENT();
++
++    /**
++     * Function IDF_SEGMENT( start, end )
++     * creates a straight segment
++     */
++    IDF_SEGMENT( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
++
++    /**
++     * Function IDF_SEGMENT( start, end )
++     * creates a straight segment, arc, or circle depending on the angle
++     * @param aStartPoint : start point (center if using KiCad convention, otherwise IDF convention)
++     * @param aEndPoint : end point (start of arc if using KiCad convention, otherwise IDF convention)
++     * @param aAngle : included angle; the KiCad convention is equivalent to the IDF convention
++     * @param fromKicad : set true if we need to convert from KiCad to IDF convention
++     */
++    IDF_SEGMENT( const IDF_POINT& aStartPoint,
++                 const IDF_POINT& aEndPoint,
++                 double aAngle,
++                 bool aFromKicad );
++
++    /**
++     * Function MatchesStart()
++     * returns true if the given coordinate is within a radius 'rad'
++     * of the start point.
++     * @param aPoint : coordinates of the point being compared
++     * @param aRadius : radius within which the points are considered the same
++     */
++    bool MatchesStart( const IDF_POINT& aPoint, double aRadius = 1e-3 );
++
++    /**
++     * Function MatchesEnd()
++     * returns true if the given coordinate is within a radius 'rad'
++     * of the end point.
++     * @param aPoint : coordinates of the point being compared
++     * @param aRadius : radius within which the points are considered the same
++     */
++    bool MatchesEnd( const IDF_POINT& aPoint, double aRadius = 1e-3 );
++
++    /**
++     * Function IsCircle()
++     * returns true if this segment is a circle
++     */
++    bool IsCircle( void );
++
++    /**
++     * Function GetMinX()
++     * returns the minimum X coordinate of this segment
++     */
++    double GetMinX( void );
++
++    /**
++     * Function SwapEnds()
++     * Swaps the start and end points and alters internal
++     * variables as necessary for arcs
++     */
++    void SwapEnds( void );
++};
++
++
++/**
++ * @Class IDF_OUTLINE
++ * contains segment and winding information for an IDF outline
++ */
++class IDF_OUTLINE
++{
++private:
++    double dir;
++    std::list<IDF_SEGMENT*> outline;
++
++public:
++    IDF_OUTLINE() { dir = 0.0; }
++    ~IDF_OUTLINE() { Clear(); }
++
++    // returns true if the current list of points represents a counterclockwise winding
++    bool IsCCW( void )
++    {
++        if( dir > 0.0 )
++            return false;
++
++        return true;
++    }
++
++    // clears the internal list of outline segments
++    void Clear( void )
++    {
++        dir = 0.0;
++
++        while( !outline.empty() )
++        {
++            delete outline.front();
++            outline.pop_front();
++        }
++    }
++
++    // returns the size of the internal segment list
++    size_t size( void )
++    {
++        return outline.size();
++    }
++
++    // returns true if the internal segment list is empty
++    bool empty( void )
++    {
++        return outline.empty();
++    }
++
++    // return the front() of the internal segment list
++    IDF_SEGMENT*& front( void )
++    {
++        return outline.front();
++    }
++
++    // return the back() of the internal segment list
++    IDF_SEGMENT*& back( void )
++    {
++        return outline.back();
++    }
++
++    // return the begin() iterator of the internal segment list
++    std::list<IDF_SEGMENT*>::iterator begin( void )
++    {
++        return outline.begin();
++    }
++
++    // return the end() iterator of the internal segment list
++    std::list<IDF_SEGMENT*>::iterator end( void )
++    {
++        return outline.end();
++    }
++
++    // push a segment onto the internal list
++    void push( IDF_SEGMENT* item );
++};
++
++#endif  // IDF_COMMON_H
+
+=== added directory 'utils'
+=== added file 'utils/CMakeLists.txt'
+--- utils/CMakeLists.txt	1970-01-01 00:00:00 +0000
++++ utils/CMakeLists.txt	2014-02-02 05:18:50 +0000
+@@ -0,0 +1,2 @@
++add_subdirectory( idftools )
++
+
+=== added directory 'utils/idftools'
+=== added file 'utils/idftools/CMakeLists.txt'
+--- utils/idftools/CMakeLists.txt	1970-01-01 00:00:00 +0000
++++ utils/idftools/CMakeLists.txt	2014-02-03 05:25:43 +0000
+@@ -0,0 +1,25 @@
++include_directories(
++    "${CMAKE_SOURCE_DIR}/include"
++    "${CMAKE_SOURCE_DIR}/lib_dxf"
++    "${CMAKE_SOURCE_DIR}/pcbnew/exporters"
++    "${CMAKE_SOURCE_DIR}/utils/idftools"
++  )
++
++link_directories(
++    "${CMAKE_BINARY_DIR}/lib_dxf"
++)
++
++add_executable( idfcyl idf_cylinder.cpp )
++
++add_executable( idfrect idf_rect.cpp )
++
++add_executable( dxf2idf dxf2idfmain.cpp dxf2idf.cpp
++    "${CMAKE_SOURCE_DIR}/pcbnew/exporters/idf_common.cpp"
++    "${CMAKE_SOURCE_DIR}/common/richio.cpp"
++  )
++
++target_link_libraries( dxf2idf lib_dxf ${wxWidgets_LIBRARIES} )
++
++install( TARGETS idfcyl idfrect dxf2idf
++    DESTINATION ${KICAD_BIN}
++    COMPONENT binary )
+
+=== added file 'utils/idftools/dxf2idf.cpp'
+--- utils/idftools/dxf2idf.cpp	1970-01-01 00:00:00 +0000
++++ utils/idftools/dxf2idf.cpp	2014-02-03 02:43:47 +0000
+@@ -0,0 +1,292 @@
++/*
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright (C) 2014  Cirilo Bernardo
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you may find one here:
++ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
++ * or you may search the http://www.gnu.org website for the version 2 license,
++ * or you may write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++ */
++
++#include <cstdio>
++#include <iostream>
++#include <libdxfrw.h>
++#include <dxf2idf.h>
++
++// differences in angle smaller than MIN_ANG are considered equal
++#define MIN_ANG     (0.01)
++
++DXF2IDF::~DXF2IDF()
++{
++    while( !lines.empty() )
++    {
++#ifdef DEBUG_IDF
++        IDF3::printSeg( lines.back() );
++#endif
++        delete lines.back();
++        lines.pop_back();
++    }
++}
++
++
++bool DXF2IDF::ReadDxf( const std::string aFile )
++{
++    dxfRW* reader = new dxfRW( aFile.c_str() );
++
++    if( !reader )
++        return false;
++
++    bool success = reader->read( this, true );
++
++    delete reader;
++    return success;
++}
++
++
++void DXF2IDF::addLine( const DRW_Line& data )
++{
++    IDF_POINT p1, p2;
++
++    p1.x = data.basePoint.x;
++    p1.y = data.basePoint.y;
++    p2.x = data.secPoint.x;
++    p2.y = data.secPoint.y;
++
++    IDF_SEGMENT* seg = new IDF_SEGMENT( p1, p2 );
++
++    if( !seg )
++    {
++        std::cerr << "* FAULT: could not add a linear segment to the outline\n";
++    }
++    else
++    {
++        lines.push_back( seg );
++    }
++
++    return;
++}
++
++
++void DXF2IDF::addCircle( const DRW_Circle& data )
++{
++    IDF_POINT p1, p2;
++
++    p1.x = data.basePoint.x;
++    p1.y = data.basePoint.y;
++
++    p2.x = p1.x + data.radious;
++    p2.y = p1.y;
++
++    IDF_SEGMENT* seg = new IDF_SEGMENT( p1, p2, 360, true );
++
++    if( !seg )
++    {
++        std::cerr << "* FAULT: could not add a linear segment to the outline\n";
++    }
++    else
++    {
++        lines.push_back( seg );
++    }
++
++    return;
++}
++
++
++void DXF2IDF::addArc( const DRW_Arc& data )
++{
++    IDF_POINT p1, p2;
++
++    p1.x = data.basePoint.x;
++    p1.y = data.basePoint.y;
++
++    // note: DXF circles always run CCW
++    double ea = data.endangle;
++
++    while( ea < data.staangle )
++        ea += M_PI;
++
++    p2.x = p1.x + cos( data.staangle ) * data.radious;
++    p2.y = p1.y + sin( data.staangle ) * data.radious;
++
++    double angle = ( ea - data.staangle ) * 180.0 / M_PI;
++
++    IDF_SEGMENT* seg = new IDF_SEGMENT( p1, p2, angle, true );
++
++    if( !seg )
++    {
++        std::cerr << "* FAULT: could not add a linear segment to the outline\n";
++    }
++    else
++    {
++        lines.push_back( seg );
++    }
++
++    return;
++}
++
++
++bool DXF2IDF::WriteOutline( FILE* aFile, bool isInch )
++{
++    if( lines.empty() )
++    {
++        std::cerr << "* DXF2IDF: empty outline\n";
++        return false;
++    }
++
++    // 1. find lowest X value
++    // 2. string an outline together
++    // 3. emit warnings if more than 1 outline
++    IDF_OUTLINE outline;
++
++    IDF3::GetOutline( lines, outline );
++
++    if( outline.empty() )
++    {
++        std::cerr << "* DXF2IDF::WriteOutline(): no valid outline in file\n";
++        return false;
++    }
++
++    if( !lines.empty() )
++    {
++        std::cerr << "* DXF2IDF::WriteOutline(): WARNING: more than 1 outline in file\n";
++        std::cerr << "*                          Only the first outline will be used\n";
++    }
++
++    char loopDir = '1';
++
++    if( outline.IsCCW() )
++        loopDir = '0';
++
++    std::list<IDF_SEGMENT*>::iterator bo;
++    std::list<IDF_SEGMENT*>::iterator eo;
++
++    if( outline.size() == 1 )
++    {
++        if( !outline.front()->IsCircle() )
++        {
++            std::cerr << "* DXF2IDF::WriteOutline(): bad outline\n";
++            return false;
++        }
++
++            // NOTE: a circle always has an angle of 360, never -360,
++            // otherwise SolidWorks chokes on the file.
++            if( isInch )
++            {
++                fprintf( aFile, "%c %d %d 0\n", loopDir,
++                         (int) (1000 * outline.front()->startPoint.x),
++                         (int) (1000 * outline.front()->startPoint.y) );
++                fprintf( aFile, "%c %d %d 360\n", loopDir,
++                         (int) (1000 * outline.front()->endPoint.x),
++                         (int) (1000 * outline.front()->endPoint.y) );
++            }
++            else
++            {
++                fprintf( aFile, "%c %.3f %.3f 0\n", loopDir,
++                         outline.front()->startPoint.x, outline.front()->startPoint.y );
++                fprintf( aFile, "%c %.3f %.3f 360\n", loopDir,
++                         outline.front()->endPoint.x, outline.front()->endPoint.y );
++            }
++
++        return true;
++    }
++
++    // ensure that the very last point is the same as the very first point
++    outline.back()-> endPoint = outline.front()->startPoint;
++
++    bo  = outline.begin();
++    eo  = outline.end();
++
++    // for the first item we write out both points
++    if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
++    {
++        if( isInch )
++        {
++            fprintf( aFile, "%c %d %d 0\n", loopDir,
++                     (int) (1000 * (*bo)->startPoint.x),
++                     (int) (1000 * (*bo)->startPoint.y) );
++            fprintf( aFile, "%c %d %d 0\n", loopDir,
++                     (int) (1000 * (*bo)->endPoint.x),
++                     (int) (1000 * (*bo)->endPoint.y) );
++        }
++        else
++        {
++            fprintf( aFile, "%c %.3f %.3f 0\n", loopDir,
++                     (*bo)->startPoint.x, (*bo)->startPoint.y );
++            fprintf( aFile, "%c %.3f %.3f 0\n", loopDir,
++                     (*bo)->endPoint.x, (*bo)->endPoint.y );
++        }
++    }
++    else
++    {
++        if( isInch )
++        {
++            fprintf( aFile, "%c %d %d 0\n", loopDir,
++                     (int) (1000 * (*bo)->startPoint.x),
++                     (int) (1000 * (*bo)->startPoint.y) );
++            fprintf( aFile, "%c %d %d %.2f\n", loopDir,
++                     (int) (1000 * (*bo)->endPoint.x),
++                     (int) (1000 * (*bo)->endPoint.y),
++                     (*bo)->angle );
++        }
++        else
++        {
++            fprintf( aFile, "%c %.3f %.3f 0\n", loopDir,
++                     (*bo)->startPoint.x, (*bo)->startPoint.y );
++            fprintf( aFile, "%c %.3f %.3f %.2f\n", loopDir,
++                     (*bo)->endPoint.x, (*bo)->endPoint.y, (*bo)->angle );
++        }
++    }
++
++    ++bo;
++
++    // for all other segments we only write out the last point
++    while( bo != eo )
++    {
++        if( isInch )
++        {
++            if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
++            {
++                fprintf( aFile, "%c %d %d 0\n", loopDir,
++                         (int) (1000 * (*bo)->endPoint.x),
++                         (int) (1000 * (*bo)->endPoint.y) );
++            }
++            else
++            {
++                fprintf( aFile, "%c %d %d %.2f\n", loopDir,
++                         (int) (1000 * (*bo)->endPoint.x),
++                         (int) (1000 * (*bo)->endPoint.y),
++                         (*bo)->angle );
++            }
++        }
++        else
++        {
++            if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
++            {
++                fprintf( aFile, "%c %.5f %.5f 0\n", loopDir,
++                         (*bo)->endPoint.x, (*bo)->endPoint.y );
++            }
++            else
++            {
++                fprintf( aFile, "%c %.5f %.5f %.2f\n", loopDir,
++                         (*bo)->endPoint.x, (*bo)->endPoint.y, (*bo)->angle );
++            }
++        }
++
++        ++bo;
++    }
++
++    return true;
++}
+
+=== added file 'utils/idftools/dxf2idf.h'
+--- utils/idftools/dxf2idf.h	1970-01-01 00:00:00 +0000
++++ utils/idftools/dxf2idf.h	2014-02-03 03:40:13 +0000
+@@ -0,0 +1,96 @@
++/*
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright (C) 2014  Cirilo Bernardo
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you may find one here:
++ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
++ * or you may search the http://www.gnu.org website for the version 2 license,
++ * or you may write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++ */
++
++#ifndef DXF2IDF_H
++#define DXF2IDF_H
++
++#include <string>
++#include <drw_interface.h>
++#include <idf_common.h>
++
++class DXF2IDF : public DRW_Interface
++{
++private:
++    std::list< IDF_SEGMENT* > lines;    // Unsorted list of graphical segments
++
++public:
++    ~DXF2IDF();
++
++    bool ReadDxf( const std::string aFile );
++    bool WriteOutline( FILE* aFile, bool isInch );
++
++private:
++    // DRW_Interface implemented callback functions
++    virtual void addLine(const DRW_Line& data);
++    virtual void addArc(const DRW_Arc& data );
++    virtual void addCircle(const DRW_Circle& data );
++
++    // DRW_Interface callbacks unsupported by DXF2IDF
++    virtual void addHeader( const DRW_Header* data ){}
++    virtual void addLType( const DRW_LType& data ){}
++    virtual void addLayer( const DRW_Layer& data ){}
++    virtual void addDimStyle( const DRW_Dimstyle& data ){}
++    virtual void addVport(const DRW_Vport& data){}
++    virtual void addTextStyle(const DRW_Textstyle& data){}
++    virtual void addBlock(const DRW_Block& data ){}
++    virtual void setBlock(const int handle){}
++    virtual void endBlock(){}
++    virtual void addPoint(const DRW_Point& data ){}
++    virtual void addRay(const DRW_Ray& data ){}
++    virtual void addXline(const DRW_Xline& data ){}
++    virtual void addEllipse(const DRW_Ellipse& data ){}
++    virtual void addLWPolyline(const DRW_LWPolyline& data ){}
++    virtual void addPolyline(const DRW_Polyline& data ){}
++    virtual void addSpline(const DRW_Spline* data ){}
++    virtual void addKnot(const DRW_Entity&){}
++    virtual void addInsert(const DRW_Insert& data ){}
++    virtual void addTrace(const DRW_Trace& data ){}
++    virtual void add3dFace(const DRW_3Dface& data ){}
++    virtual void addSolid(const DRW_Solid& data ){}
++    virtual void addMText(const DRW_MText& data){}
++    virtual void addText(const DRW_Text& data ){}
++    virtual void addDimAlign(const DRW_DimAligned *data ){}
++    virtual void addDimLinear(const DRW_DimLinear *data ){}
++    virtual void addDimRadial(const DRW_DimRadial *data ){}
++    virtual void addDimDiametric(const DRW_DimDiametric *data ){}
++    virtual void addDimAngular(const DRW_DimAngular *data ){}
++    virtual void addDimAngular3P(const DRW_DimAngular3p *data ){}
++    virtual void addDimOrdinate(const DRW_DimOrdinate *data ){}
++    virtual void addLeader(const DRW_Leader *data ){}
++    virtual void addHatch(const DRW_Hatch* data ){}
++    virtual void addViewport(const DRW_Viewport& data){}
++    virtual void addImage(const DRW_Image* data ){}
++    virtual void linkImage(const DRW_ImageDef* data ){}
++    virtual void addComment(const char*){}
++    virtual void writeHeader(DRW_Header& data){}
++    virtual void writeBlocks(){}
++    virtual void writeBlockRecords(){}
++    virtual void writeEntities(){}
++    virtual void writeLTypes(){}
++    virtual void writeLayers(){}
++    virtual void writeTextstyles(){}
++    virtual void writeVports(){}
++    virtual void writeDimstyles(){}
++};
++
++#endif  // DXF2IDF_H
+
+=== added file 'utils/idftools/dxf2idfmain.cpp'
+--- utils/idftools/dxf2idfmain.cpp	1970-01-01 00:00:00 +0000
++++ utils/idftools/dxf2idfmain.cpp	2014-02-03 03:13:06 +0000
+@@ -0,0 +1,189 @@
++/*
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright (C) 2014  Cirilo Bernardo
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you may find one here:
++ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
++ * or you may search the http://www.gnu.org website for the version 2 license,
++ * or you may write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++ */
++
++#include <cstdio>
++#include <iostream>
++#include <sstream>
++#include <string>
++#include <list>
++#include <dxf2idf.h>
++
++using namespace std;
++
++int main( int argc, char **argv )
++{
++    list< string > comments;
++    string line;
++    stringstream tstr;
++
++    string dname;           // DXF filename
++    string gname;           // Geometry Name
++    string pname;           // Part Name
++    double height;          // extrusion height
++    bool   inch = false;    // true = inches, false = mm
++    bool   ok;
++
++    if( argc == 1 )
++    {
++        // no arguments; print out usage information
++        cout << "dxf2idf: this program takes line, arc, and circle segments\n";
++        cout << "         from a DXF file and creates an IDF component outline file.\n\n";
++        cout << "Input:\n";
++        cout << "         DXF filename: the input file, must end in '.dxf'\n";
++        cout << "         Units: mm, in (millimeters or inches)\n";
++        cout << "         Geometry Name: string, as per IDF version 3.0 specification\n";
++        cout << "         Part Name: as per IDF version 3.0 specification of Part Number\n";
++        cout << "         Height: extruded height of the outline\n";
++        cout << "         Comments: all non-empty lines are comments to be added to\n";
++        cout << "                   the IDF file. An empty line signifies the end of\n";
++        cout << "                   the comment block.\n";
++        cout << "         File name: output filename, must end in '.idf'\n\n";
++    }
++
++    line.clear();
++    while( line.empty() || line.find( ".dxf" ) == string::npos )
++    {
++        cout << "* DXF filename: ";
++
++        line.clear();
++        std::getline( cin, line );
++    }
++    dname = line;
++
++    line.clear();
++    while( line.compare( "mm" ) && line.compare( "in" )
++        && line.compare( "MM" ) && line.compare( "IN" ) )
++    {
++        cout << "* Units (mm,in): ";
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    if( line.compare( "mm" ) && line.compare( "MM" ) )
++        inch = true;
++
++    line.clear();
++    while( line.empty() )
++    {
++        cout << "* Geometry name: ";
++        line.clear();
++        std::getline( cin, line );
++
++        if( line.find( "\"" ) != string::npos )
++        {
++            cerr << "[INFO] geometry name may not contain quotation marks\n";
++            line.clear();
++        }
++    }
++    gname = line;
++
++    line.clear();
++    while( line.empty() )
++    {
++        cout << "* Part name: ";
++        line.clear();
++        std::getline( cin, line );
++
++        if( line.find( "\"" ) != string::npos )
++        {
++            cerr << "[INFO] part name may not contain quotation marks\n";
++            line.clear();
++        }
++    }
++    pname = line;
++
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Height: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++
++        if( (tstr >> height ) && height > 0.001 )
++            ok = true;
++    }
++
++    cout << "* COMMENTS: any non-blank line is a comment;\n";
++    cout << "            a blank line signifies the end of comments.\n";
++    ok = false;
++    while( !ok )
++    {
++        line.clear();
++        std::getline( cin, line );
++
++        if( line.empty() )
++        {
++            ok = true;
++        }
++        else
++        {
++            if( line[0] != '#' )
++                line.insert( 0, "# " );
++
++            comments.push_back( line );
++        }
++    }
++
++    line.clear();
++    while( line.empty() || line.find( ".idf" ) == string::npos )
++    {
++        cout << "* File name (*.idf): ";
++
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    DXF2IDF dxf;
++
++    dxf.ReadDxf( dname.c_str() );
++
++    FILE* fp = fopen( line.c_str(), "w" );
++
++    list< string >::const_iterator scom = comments.begin();
++    list< string >::const_iterator ecom = comments.end();
++
++    while( scom != ecom )
++    {
++        fprintf( fp, "%s\n", (*scom).c_str() );
++        ++scom;
++    }
++
++    fprintf( fp, ".ELECTRICAL\n" );
++
++    if( inch )
++        fprintf( fp, "\"%s\" \"%s\" THOU %d\n", gname.c_str(),
++                 pname.c_str(), (int) (height * 1000.0) );
++    else
++        fprintf( fp, "\"%s\" \"%s\" MM %.3f\n", gname.c_str(),
++                 pname.c_str(), height );
++
++    dxf.WriteOutline( fp, inch );
++
++    fprintf( fp, ".END_ELECTRICAL\n" );
++
++    return 0;
++}
+\ No newline at end of file
+
+=== added file 'utils/idftools/idf_cylinder.cpp'
+--- utils/idftools/idf_cylinder.cpp	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_cylinder.cpp	2014-01-31 23:44:12 +0000
+@@ -0,0 +1,668 @@
++/*
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright (C) 2014  Cirilo Bernardo
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you may find one here:
++ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
++ * or you may search the http://www.gnu.org website for the version 2 license,
++ * or you may write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++ */
++
++/*
++ *  This program creates an outline for a horizontal or vertically
++ *  oriented axial or radial leaded cylinder with dimensions based
++ *  on the user's input.
++ */
++
++#include <iostream>
++#include <fstream>
++#include <string>
++#include <sstream>
++#include <cmath>
++#include <cstdio>
++#include <list>
++#include <utility>
++#include <clocale>
++
++using namespace std;
++
++void make_vcyl( bool inch, bool axial, double dia, double length,
++                double z, double wireDia );
++
++void make_hcyl( bool inch, bool axial, double dia, double length,
++                double z, double wireDia );
++
++void writeAxialCyl( FILE* fp, bool inch, double dia, double length, double wireDia, double pitch );
++
++void writeRadialCyl( FILE* fp, bool inch, double dia, double length, double wireDia,
++                     double pitch, double lead );
++
++int main( int argc, char **argv )
++{
++    // IDF implicitly requires the C locale
++    setlocale( LC_ALL, "C" );
++
++    if( argc == 1 )
++    {
++        cout << "idfcyl: This program generates an outline for a cylindrical component.\n";
++        cout << "        The cylinder may be horizontal or vertical.\n";
++        cout << "        A horizontal cylinder may have wires at one or both ends.\n";
++        cout << "        A vertical cylinder may have at most one wire which may be\n";
++        cout << "        placed on the left or right side.\n\n";
++        cout << "Input:\n";
++        cout << "        Unit: mm, in (millimeters or inches)\n";
++        cout << "        Orientation: V (vertical)\n";
++        cout << "        Lead type: X, R (axial, radial)\n";
++        cout << "        Diameter of body\n";
++        cout << "        Length of body\n";
++        cout << "        Board offset\n";
++        cout << "        *   Wire diameter\n";
++        cout << "        *   Pitch\n";
++        cout << "        **  Wire side: L, R (left, right)\n";
++        cout << "        *** Lead length\n";
++        cout << "        File name (must end in *.idf)\n\n";
++        cout << "        NOTES:\n";
++        cout << "            *   only required for horizontal orientation or\n";
++        cout << "                vertical orientation with axial leads\n\n";
++        cout << "            **  only required for vertical orientation with axial leads\n\n";
++        cout << "            *** only required for horizontal orientation with radial leads\n\n";
++    }
++
++    char orientation = '\0';
++    bool inch  = false; // default mm
++    double dia = 0.0;
++    double length = 0.0;
++    double extraZ = 0.0;
++    double wireDia = 0.0;
++    bool axial = false;
++
++    stringstream tstr;
++    string line;
++
++    line.clear();
++    while( line.compare( "mm" ) && line.compare( "in" ) )
++    {
++        cout << "* Units (mm,in): ";
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    if( line.compare( "mm" ) )
++        inch = true;
++
++    line.clear();
++    while( line.compare( "H" ) && line.compare( "h" )
++        && line.compare( "V" ) && line.compare( "v" ) )
++    {
++        cout << "* Orientation (H,V): ";
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    if( line.compare( "H" ) && line.compare( "h" ) )
++        orientation = 'v';
++    else
++        orientation = 'h';
++
++    bool ok = false;
++
++    while( !ok )
++    {
++        cout << "* Axial or Radial (X,R): ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        if( !line.compare( "x" ) || !line.compare( "X" ) )
++        {
++            axial = true;
++            ok = true;
++        }
++        else if( !line.compare( "r" ) || !line.compare( "R" ) )
++        {
++            axial = false;
++            ok = true;
++        }
++    }
++
++    // cylinder dimensions
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Diameter: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> dia) && dia > 0.0 )
++            ok = true;
++    }
++
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Length: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> length) && length > 0.0 )
++            ok = true;
++    }
++
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Board offset: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> extraZ) && extraZ > 0.0 )
++            ok = true;
++    }
++
++    ok = false;
++    while( ( axial || orientation == 'h' ) && !ok )
++    {
++        cout << "* Wire diameter: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> wireDia) && wireDia > 0.0 )
++        {
++            if( wireDia < dia )
++                ok = true;
++            else
++                cout << "* WARNING: wire diameter must be < cylinder diameter\n";
++        }
++    }
++
++    switch( orientation )
++    {
++        case 'v':
++            make_vcyl( inch, axial, dia, length, extraZ, wireDia );
++            break;
++        case 'h':
++            make_hcyl( inch, axial, dia, length, extraZ, wireDia );
++            break;
++        default:
++            break;
++    }
++
++    setlocale( LC_ALL, "" );
++    return 0;
++}
++
++
++void make_vcyl( bool inch, bool axial, double dia, double length,
++                double z, double wireDia )
++{
++    bool ok = false;
++    bool left = false;
++    stringstream tstr;
++    string line;
++
++    double pitch = 0.0;
++
++    while( axial && !ok )
++    {
++        cout << "* Pitch: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> pitch) && pitch > 0.0 )
++        {
++            if( (pitch - wireDia) <= (dia / 2.0) )
++            {
++                cout << "* WARNING: Pitch must be > dia/2 + wireDia\n";
++            }
++            else
++            {
++                ok = true;
++            }
++        }
++    }
++
++    ok = false;
++    while( axial && !ok )
++    {
++        cout << "* Pin side (L,R): ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        if( !line.compare( "l" ) || !line.compare( "L" ) )
++        {
++            left = true;
++            ok   = true;
++        }
++        else if( !line.compare( "r" ) || !line.compare( "R" ) )
++            ok = true;
++    }
++
++    line.clear();
++    while( line.empty() || line.find( ".idf" ) == string::npos )
++    {
++        cout << "* File name (*.idf): ";
++
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    FILE* fp = fopen( line.c_str(), "w" );
++
++    if( !fp )
++    {
++        cerr << "Could not open output file: " << line << "\n";
++        return;
++    }
++
++    fprintf( fp, "# cylindrical outline, vertical, " );
++
++    if( !axial )
++        fprintf( fp, "radial leads\n" );
++    else
++        fprintf( fp, "axial lead on %s\n", left ? "left" : "right" );
++
++    fprintf( fp, "# file: \"%s\"\n", line.c_str() );
++
++    if( inch )
++    {
++        fprintf( fp, "# dia: %d THOU\n", (int) (dia * 1000) );
++        fprintf( fp, "# length: %d THOU\n", (int) (length * 1000) );
++        fprintf( fp, "# board offset: %d THOU\n", (int) (z * 1000) );
++
++        if( axial )
++        {
++            fprintf( fp, "# wire dia: %d THOU\n", (int) (wireDia * 1000) );
++            fprintf( fp, "# pitch: %d THOU\n", (int) (pitch * 1000) );
++        }
++    }
++    else
++    {
++        fprintf( fp, "# dia: %.3f mm\n", dia );
++        fprintf( fp, "# length: %.3f mm\n", length );
++        fprintf( fp, "# board offset: %.3f mm\n", z );
++
++        if( axial )
++        {
++            fprintf( fp, "# wire dia: %.3f mm\n", wireDia );
++            fprintf( fp, "# pitch: %.3f mm\n", pitch );
++        }
++    }
++
++    fprintf( fp, ".ELECTRICAL\n" );
++
++    if( !axial )
++    {
++        fprintf( fp, "\"CYLV_%s_RAD\" \"D%.3f_H%.3f_Z%.3f\" ", inch ? "IN" : "MM",
++            dia, length, z );
++    }
++    else
++    {
++        fprintf( fp, "\"CYLV_%s_AX%s\" \"D%.3f_H%.3f_Z%.3f_WD%.3f_P%.3f\" ", inch ? "IN" : "MM",
++                 left ? "L" : "R", dia, length, z, wireDia, pitch );
++    }
++
++    if( inch )
++        fprintf( fp, "THOU %d\n", (int) ((length + z) * 1000) );
++    else
++        fprintf( fp, "MM %.3f\n", length + z );
++
++    if( !axial )
++    {
++        fprintf( fp, "0 0 0 0\n" );
++
++        if( inch )
++            fprintf( fp, "0 %d 0 360\n", (int) (dia * 1000) );
++        else
++            fprintf( fp, "0 %.3f 0 360\n", dia );
++
++        fprintf( fp, ".END_ELECTRICAL\n" );
++        fclose( fp );
++        return;
++    }
++
++    double px[4], py[4];
++
++    // points are:
++    // [0] = upper point on cylinder perimeter
++    // [1] = lower point on cylinder perimeter
++    // [2] = point beneath wire center
++    // [3] = point above wire center
++
++    if( inch )
++    {
++        dia     *= 1000.0;
++        pitch   *= 1000.0;
++        wireDia *= 1000.0;
++    }
++
++    double ang = asin( wireDia / dia );
++    px[0] = dia * cos( ang ) / 2.0 - pitch / 2.0;
++    px[1] = px[0];
++    px[2] = pitch / 2.0;
++    px[3] = px[2];
++
++    py[0] = wireDia / 2.0;
++    py[1] = -py[0];
++    py[2] = py[1];
++    py[3] = py[0];
++
++    char li = '0';
++
++    double fullAng = 360.0;
++
++    if( left )
++    {
++        li = '1';
++        fullAng = -360.0;
++        for( int i = 0; i < 4; ++i ) px[i] = -px[i];
++    }
++
++
++    if( inch )
++    {
++        fprintf( fp, "%c %d %d 0\n", li, (int) px[0], (int) py[0] );
++        fprintf( fp, "%c %d %d %.3f\n", li, (int) px[1], (int) py[1],
++                 fullAng * ( 1 - ang / M_PI ) );
++        fprintf( fp, "%c %d %d 0\n", li, (int) px[2], (int) py[2] );
++        fprintf( fp, "%c %d %d %s\n", li, (int) px[3], (int) py[3],
++                 left ? "-180" : "180" );
++        fprintf( fp, "%c %d %d 0\n", li, (int) px[0], (int) py[0] );
++    }
++    else
++    {
++        fprintf( fp, "%c %.3f %.3f 0\n", li, px[0], py[0] );
++        fprintf( fp, "%c %.3f %.3f %.3f\n", li, px[1], py[1], fullAng * ( 1 - ang / M_PI ) );
++        fprintf( fp, "%c %.3f %.3f 0\n", li, px[2], py[2] );
++        fprintf( fp, "%c %.3f %.3f %s\n", li, px[3], py[3],
++                 left ? "-180" : "180" );
++        fprintf( fp, "%c %.3f %.3f 0\n", li, px[0], py[0] );
++    }
++
++    fprintf( fp, ".END_ELECTRICAL\n" );
++    fclose( fp );
++    return;
++}
++
++
++void make_hcyl( bool inch, bool axial, double dia, double length,
++                double z, double wireDia )
++{
++    bool ok = false;
++    stringstream tstr;
++    string line;
++
++    double pitch = 0.0;
++    double lead  = 0.0; // lead length for radial leads
++
++    ok = false;
++    while( !ok )
++    {
++        if( axial )
++            cout << "* Axial pitch: ";
++        else
++            cout << "* Radial pitch: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> pitch) && pitch > 0.0 )
++        {
++            if( axial )
++            {
++                if( (pitch - wireDia) <= length )
++                {
++                    cout << "* WARNING: Axial pitch must be > length + wireDia\n";
++                }
++                else
++                {
++                    ok = true;
++                }
++            }
++            else
++            {
++                if( (pitch + wireDia) >= dia )
++                {
++                    cout << "* WARNING: Radial pitch must be < dia - wireDia\n";
++                }
++                else if( pitch <= wireDia )
++                {
++                    cout << "* WARNING: Radial pitch must be > wireDia\n";
++                }
++                else
++                {
++                    ok = true;
++                }
++            }
++        }
++    }
++
++    ok = false;
++    while( !axial && !ok )
++    {
++        cout << "* Lead length: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> lead) && lead > 0.0 )
++        {
++            if( lead < wireDia )
++                cout << "* WARNING: lead length must be >= wireDia\n";
++            else
++                ok = true;
++        }
++    }
++
++    line.clear();
++    while( line.empty() || line.find( ".idf" ) == string::npos )
++    {
++        cout << "* File name (*.idf): ";
++
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    FILE* fp = fopen( line.c_str(), "w" );
++
++    if( !fp )
++    {
++        cerr << "Could not open output file: " << line << "\n";
++        return;
++    }
++
++    fprintf( fp, "# cylindrical outline, horiz., " );
++
++    fprintf( fp, "%s pins\n", axial ? "axial" : "radial" );
++
++    fprintf( fp, "# file: \"%s\"\n", line.c_str() );
++
++    if( inch )
++    {
++        fprintf( fp, "# dia: %d THOU\n", (int) (dia * 1000) );
++        fprintf( fp, "# length: %d THOU\n", (int) (length * 1000) );
++        fprintf( fp, "# extra height: %d THOU\n", (int) (z * 1000) );
++        fprintf( fp, "# wire dia: %d THOU\n", (int) (wireDia * 1000) );
++        fprintf( fp, "# pitch: %d THOU\n", (int) (pitch * 1000) );
++        if( !axial )
++            fprintf( fp, "# lead: %d THOU\n", (int) (lead * 1000) );
++    }
++    else
++    {
++        fprintf( fp, "# dia: %.3f mm\n", dia );
++        fprintf( fp, "# length: %.3f mm\n", length );
++        fprintf( fp, "# extra height: %.3f mm\n", z );
++        fprintf( fp, "# wire dia: %.3f mm\n", wireDia );
++        fprintf( fp, "# pitch: %.3f mm\n", pitch );
++        if( !axial )
++            fprintf( fp, "# lead: %.3f mm\n", lead );
++    }
++
++    fprintf( fp, ".ELECTRICAL\n" );
++
++    if( axial )
++    {
++        fprintf( fp, "\"CYLH_%s_AXI\" \"D%.3f_H%.3f_Z%.3f_WD%.3f_P%.3f\" ",
++                 inch ? "IN" : "MM", dia, length, z, wireDia, pitch );
++    }
++    else
++    {
++        fprintf( fp, "\"CYLH_%s_RAD\" \"D%.3f_H%.3f_Z%.3f_WD%.3f_P%.3f_L%.3f\" ",
++                 inch ? "IN" : "MM", dia, length, z, wireDia, pitch, lead );
++    }
++
++    if( inch )
++    {
++        fprintf( fp, "THOU %d\n", (int) ((dia + z) * 1000) );
++        dia *= 1000.0;
++        length *= 1000.0;
++        wireDia *= 1000.0;
++        pitch *= 1000.0;
++        if( !axial )
++            lead *= 1000.0;
++    }
++    else
++    {
++        fprintf( fp, "MM %.3f\n", dia + z );
++    }
++
++    if( axial )
++        writeAxialCyl( fp, inch, dia, length, wireDia, pitch );
++    else
++        writeRadialCyl( fp, inch, dia, length, wireDia, pitch, lead );
++
++    fprintf( fp, ".END_ELECTRICAL\n" );
++    fclose( fp );
++    return;
++    return;
++}
++
++void writeAxialCyl( FILE* fp, bool inch, double dia, double length,
++                   double wireDia, double pitch )
++{
++    double x1, y1;
++    double x2, y2;
++
++    x1 = -length / 2.0;
++    x2 = -pitch / 2.0;
++    y1 = dia / 2.0;
++    y2 = wireDia / 2.0;
++
++    if( inch )
++    {
++        fprintf( fp, "0 %d %d 0\n", (int) x1, (int) y1 );
++        fprintf( fp, "0 %d %d 0\n", (int) x1, (int) y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) x2, (int) y2 );
++        fprintf( fp, "0 %d %d 180\n", (int) x2, (int) -y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) x1, (int) -y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) x1, (int) -y1 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x1, (int) -y1 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x1, (int) -y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x2, (int) -y2 );
++        fprintf( fp, "0 %d %d 180\n", (int) -x2, (int) y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x1, (int) y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x1, (int) y1 );
++        fprintf( fp, "0 %d %d 0\n", (int) x1, (int) y1 );
++    }
++    else
++    {
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x2, y2 );
++        fprintf( fp, "0 %.3f %.3f 180\n", x2, -y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, -y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, -y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, -y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, -y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x2, -y2 );
++        fprintf( fp, "0 %.3f %.3f 180\n", -x2, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, y1 );
++    }
++
++    return;
++}
++
++void writeRadialCyl( FILE* fp, bool inch, double dia, double length,
++                    double wireDia, double pitch, double lead )
++{
++    double x1, y1;
++    double x2, y2;
++    double x3;
++
++    // center is between the mounting holes
++    // which are on a horizontal line
++    y1 = lead + length;
++    y2 = lead;
++    x1 = dia / 2.0;
++    x2 = ( pitch + wireDia ) /2.0;
++    x3 = x2 - wireDia;
++
++    if( inch )
++    {
++        fprintf( fp, "0 %d %d 0\n", (int) -x1, (int) y1 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x1, (int) y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x2, (int) y2 );
++        fprintf( fp, "0 %d 0 0\n", (int) -x2 );
++        fprintf( fp, "0 %d 0 180\n", (int) -x3 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x3, (int) y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) x3, (int) y2 );
++        fprintf( fp, "0 %d 0 0\n", (int) x3 );
++        fprintf( fp, "0 %d 0 180\n", (int) x2 );
++        fprintf( fp, "0 %d %d 0\n", (int) x2, (int) y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) x1, (int) y2 );
++        fprintf( fp, "0 %d %d 0\n", (int) x1, (int) y1 );
++        fprintf( fp, "0 %d %d 0\n", (int) -x1, (int) y1 );
++    }
++    else
++    {
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x2, y2 );
++        fprintf( fp, "0 %.3f 0 0\n", -x2 );
++        fprintf( fp, "0 %.3f 0 180\n", -x3 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x3, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x3, y2 );
++        fprintf( fp, "0 %.3f 0 0\n", x3 );
++        fprintf( fp, "0 %.3f 0 180\n", x2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x2, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, y1 );
++    }
++
++    return;
++}
+
+=== added file 'utils/idftools/idf_rect.cpp'
+--- utils/idftools/idf_rect.cpp	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_rect.cpp	2014-01-31 23:57:32 +0000
+@@ -0,0 +1,421 @@
++/*
++ * This program source code file is part of KiCad, a free EDA CAD application.
++ *
++ * Copyright (C) 2014  Cirilo Bernardo
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you may find one here:
++ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
++ * or you may search the http://www.gnu.org website for the version 2 license,
++ * or you may write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++ */
++
++#include <iostream>
++#include <fstream>
++#include <string>
++#include <sstream>
++#include <cmath>
++#include <cstdio>
++#include <list>
++#include <utility>
++#include <clocale>
++
++using namespace std;
++
++void writeLeaded( FILE* fp, double width, double length, double height,
++                  double wireDia, double pitch, bool inch );
++
++void writeLeadless( FILE* fp, double width, double length,
++                    double height, double chamfer, bool inch );
++
++int main( int argc, char **argv )
++{
++    // IDF implicitly requires the C locale
++    setlocale( LC_ALL, "C" );
++
++    if( argc == 1 )
++    {
++        cout << "idfrect: This program generates an outline for a rectangular component.\n";
++        cout << "         The component may have a single lead (axial) or a chamfer on the\n";
++        cout << "         upper left corner.\n";
++        cout << "Input:\n";
++        cout << "        Unit: mm, in (millimeters or inches)\n";
++        cout << "        Width:\n";
++        cout << "        Length:\n";
++        cout << "        Height:\n";
++        cout << "        Chamfer: length of the 45 deg. chamfer\n";
++        cout << "        *  Leaded: Y,N (lead is always to the right)\n";
++        cout << "        ** Wire diameter\n";
++        cout << "        ** Pitch\n";
++        cout << "        File name (must end in *.idf)\n\n";
++        cout << "        NOTES:\n";
++        cout << "            *   only required if chamfer = 0\n\n";
++        cout << "            **  only required for leaded components\n\n";
++    }
++
++    bool inch  = false; // default mm
++    double width = 0.0;
++    double length = 0.0;
++    double height = 0.0;
++    double wireDia = 0.0;
++    double pitch = 0.0;
++    double chamfer = 0.0;
++    bool leaded = false;
++    bool ok = false;
++
++    stringstream tstr;
++    string line;
++
++    line.clear();
++    while( line.compare( "mm" ) && line.compare( "in" ) )
++    {
++        cout << "* Units (mm,in): ";
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    if( line.compare( "mm" ) )
++        inch = true;
++
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Width: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> width) && width >= 0.001 )
++            ok = true;
++    }
++
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Length: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> length) && length > 0.0 )
++            ok = true;
++    }
++
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Height: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> height) && height >= 0.001 )
++            ok = true;
++    }
++
++    ok = false;
++    while( !ok )
++    {
++        cout << "* Chamfer (0 for none): ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> chamfer) && chamfer >= 0.0 )
++        {
++            if( chamfer > width / 3.0 || chamfer > length / 3.0 )
++                cout << "* WARNING: chamfer must be <= MIN( width, length )/3\n";
++            else
++                ok = true;
++        }
++    }
++
++    if( chamfer < 1e-6 )
++    {
++        ok = false;
++        while( !ok )
++        {
++            cout << "* Leaded: Y, N: ";
++
++            line.clear();
++            std::getline( cin, line );
++
++            if( !line.compare( "Y" ) || !line.compare( "y" ) )
++            {
++                leaded = true;
++                ok = true;
++            }
++            else if( !line.compare( "N" ) || !line.compare( "n" ) )
++            {
++                leaded = false;
++                ok = true;
++            }
++        }
++    }
++
++    ok = false;
++    while( leaded && !ok )
++    {
++        cout << "* Wire dia.: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> wireDia) && wireDia >= 0.001 )
++        {
++            if( wireDia >= length )
++                cout << "* WARNING: wire diameter must be < length\n";
++            else
++                ok = true;
++        }
++    }
++
++    ok = false;
++    while( leaded && !ok )
++    {
++        cout << "* Pitch: ";
++
++        line.clear();
++        std::getline( cin, line );
++
++        tstr.clear();
++        tstr.str( line );
++        if( (tstr >> pitch) && pitch >= 0.001 )
++        {
++            if( pitch <= ( length + wireDia ) / 2.0 )
++                cout << "* WARNING: pitch must be > (length + wireDia)/2\n";
++            else
++                ok = true;
++        }
++    }
++
++    line.clear();
++    while( line.empty() || line.find( ".idf" ) == string::npos )
++    {
++        cout << "* File name (*.idf): ";
++
++        line.clear();
++        std::getline( cin, line );
++    }
++
++    FILE* fp = fopen( line.c_str(), "w" );
++
++    if( !fp )
++    {
++        cerr << "Could not open output file: " << line << "\n";
++    }
++    else
++    {
++        fprintf( fp, "# rectangular outline%s\n", leaded ? ", leaded" : "" );
++        fprintf( fp, "# file: \"%s\"\n", line.c_str() );
++
++        if( inch )
++        {
++            width *= 1000.0;
++            length *= 1000.0;
++            height *= 1000.0;
++            wireDia *= 1000.0;
++            pitch *= 1000.0;
++            chamfer *= 1000.0;
++
++            fprintf( fp, "# width: %d THOU\n", (int) width );
++            fprintf( fp, "# length: %d THOU\n", (int) length );
++            fprintf( fp, "# height: %d THOU\n", (int) height );
++
++            if( leaded )
++            {
++                fprintf( fp, "# wire dia: %d THOU\n", (int) wireDia );
++                fprintf( fp, "# pitch: %d THOU\n", (int) pitch );
++            }
++            else
++            {
++                fprintf( fp, "# chamfer: %d THOU\n", (int) chamfer );
++            }
++
++            fprintf( fp, ".ELECTRICAL\n" );
++            fprintf( fp, "\"RECT%sIN\" \"W%d_L%d_H%d", leaded ? "L" : "",
++                     (int) width, (int) length, (int) height );
++
++            if( leaded )
++                fprintf( fp, "_D%d_P%d\" ", (int) wireDia, (int) pitch );
++            else
++                fprintf( fp, "_C%d\" ", (int) chamfer );
++
++            fprintf( fp, "THOU %d\n", (int) height );
++        }
++        else
++        {
++            fprintf( fp, "# width: %.3f mm\n", width );
++            fprintf( fp, "# length: %.3f mm\n", length );
++            fprintf( fp, "# height: %.3f mm\n", height );
++
++            if( leaded )
++            {
++                fprintf( fp, "# wire dia: %.3f mm\n", wireDia );
++                fprintf( fp, "# pitch: %.3f mm\n", pitch );
++            }
++            else
++            {
++                fprintf( fp, "# chamfer: %.3f mm\n", chamfer );
++            }
++
++            fprintf( fp, ".ELECTRICAL\n" );
++            fprintf( fp, "\"RECT%sMM\" \"W%.3f_L%.3f_H%.3f_", leaded ? "L" : "",
++                     width, length, height );
++
++            if( leaded )
++                fprintf( fp, "D%.3f_P%.3f\" ", wireDia, pitch );
++            else
++                fprintf( fp, "C%.3f\" ", chamfer );
++
++            fprintf( fp, "MM %.3f\n", height );
++        }
++
++        if( leaded )
++            writeLeaded( fp, width, length, height, wireDia, pitch, inch );
++        else
++            writeLeadless( fp, width, length, height, chamfer, inch );
++
++        fprintf( fp, ".END_ELECTRICAL\n" );
++        fclose( fp );
++    }
++
++    setlocale( LC_ALL, "" );
++    return 0;
++}
++
++
++void writeLeaded( FILE* fp, double width, double length,
++                  double height, double wireDia, double pitch, bool inch )
++{
++    if( inch )
++    {
++        int x1, x2, x3;
++        int y1, y2;
++
++        x1 = pitch / 2.0;
++        x2 = width / 2.0 - x1;
++        x3 = x2 - width;
++
++        y1 = wireDia / 2.0;
++        y2 = length / 2.0;
++
++        fprintf( fp, "0 %d %d 0\n", x1, y1 );
++        fprintf( fp, "0 %d %d 0\n", x2, y1 );
++        fprintf( fp, "0 %d %d 0\n", x2, y2 );
++        fprintf( fp, "0 %d %d 0\n", x3, y2 );
++        fprintf( fp, "0 %d %d 0\n", x3, -y2 );
++        fprintf( fp, "0 %d %d 0\n", x2, -y2 );
++        fprintf( fp, "0 %d %d 0\n", x2, -y1 );
++        fprintf( fp, "0 %d %d 0\n", x1, -y1 );
++        fprintf( fp, "0 %d %d 180\n", x1, y1 );
++    }
++    else
++    {
++        double x1, x2, x3;
++        double y1, y2;
++
++        x1 = pitch / 2.0;
++        x2 = width / 2.0 - x1;
++        x3 = x2 - width;
++
++        y1 = wireDia / 2.0;
++        y2 = length / 2.0;
++
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x2, y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x2, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x3, y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x3, -y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x2, -y2 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x2, -y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", x1, -y1 );
++        fprintf( fp, "0 %.3f %.3f 180\n", x1, y1 );
++    }
++
++    return;
++}
++
++void writeLeadless( FILE* fp, double width, double length,
++                    double height, double chamfer, bool inch )
++{
++    if( chamfer < 0.001 )
++    {
++        if( inch )
++        {
++            int x = width / 2.0;
++            int y = length / 2.0;
++
++            fprintf( fp, "0 %d %d 0\n", x, y );
++            fprintf( fp, "0 %d %d 0\n", -x, y );
++            fprintf( fp, "0 %d %d 0\n", -x, -y );
++            fprintf( fp, "0 %d %d 0\n", x, -y );
++            fprintf( fp, "0 %d %d 0\n", x, y );
++        }
++        else
++        {
++            double x = width / 2.0;
++            double y = length / 2.0;
++
++            fprintf( fp, "0 %.3f %.3f 0\n", x, y );
++            fprintf( fp, "0 %.3f %.3f 0\n", -x, y );
++            fprintf( fp, "0 %.3f %.3f 0\n", -x, -y );
++            fprintf( fp, "0 %.3f %.3f 0\n", x, -y );
++            fprintf( fp, "0 %.3f %.3f 0\n", x, y );
++        }
++
++        return;
++    }
++
++    if( inch )
++    {
++        int x = width / 2.0;
++        int y = length / 2.0;
++        int x1 = x - chamfer;
++        int y1 = y - chamfer;
++
++        fprintf( fp, "0 %d %d 0\n", x, y );
++        fprintf( fp, "0 %d %d 0\n", -x1, y );
++        fprintf( fp, "0 %d %d 0\n", -x, y1 );
++        fprintf( fp, "0 %d %d 0\n", -x, -y );
++        fprintf( fp, "0 %d %d 0\n", x, -y );
++        fprintf( fp, "0 %d %d 0\n", x, y );
++    }
++    else
++    {
++        double x = width / 2.0;
++        double y = length / 2.0;
++        double x1 = x - chamfer;
++        double y1 = y - chamfer;
++
++        fprintf( fp, "0 %.3f %.3f 0\n", x, y );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x1, y );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x, y1 );
++        fprintf( fp, "0 %.3f %.3f 0\n", -x, -y );
++        fprintf( fp, "0 %.3f %.3f 0\n", x, -y );
++        fprintf( fp, "0 %.3f %.3f 0\n", x, y );
++    }
++
++    return;
++}
+
