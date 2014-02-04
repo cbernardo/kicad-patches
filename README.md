@@ -3,7 +3,7 @@ kicad-patches
 
 Patches for various improvements to KiCad
 
-Latest BZR head used to create the patches: 4632
+Latest BZR head used to create the patches: 4657
 
 Notes:
 
@@ -18,7 +18,7 @@ Notes:
 
 PATCHES:
 
-idf_tools.patch: [ rev. 4653 ]
+idf_tools.patch: [ rev. 4657 ]
     Adds tools for creating IDF component outlines:
         1. idfcyl: creates a cylindrical outline in horizontal or
             vertical orientation and with axial or radial leads.

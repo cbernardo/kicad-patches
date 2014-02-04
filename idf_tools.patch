@@ -1,7 +1,7 @@
 === modified file 'CMakeLists.txt'
---- CMakeLists.txt	2014-02-02 21:50:45 +0000
-+++ CMakeLists.txt	2014-02-03 02:54:05 +0000
-@@ -513,6 +513,7 @@
+--- CMakeLists.txt	2014-02-03 19:26:18 +0000
++++ CMakeLists.txt	2014-02-04 03:20:33 +0000
+@@ -542,6 +542,7 @@
  add_subdirectory( bitmap2component )
  add_subdirectory( pcb_calculator )
  add_subdirectory( tools )
@@ -23,8 +23,8 @@
      exporters/gen_modules_placefile.cpp
 
 === modified file 'pcbnew/exporters/idf.cpp'
---- pcbnew/exporters/idf.cpp	2014-01-29 16:42:21 +0000
-+++ pcbnew/exporters/idf.cpp	2014-02-03 03:51:34 +0000
+--- pcbnew/exporters/idf.cpp	2014-02-03 21:39:42 +0000
++++ pcbnew/exporters/idf.cpp	2014-02-04 03:20:33 +0000
 @@ -47,8 +47,6 @@
  #include <idf.h>
  #include <build_version.h>
