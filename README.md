@@ -18,6 +18,15 @@ Notes:
 
 PATCHES:
 
+kicad_idftools.patch:
+	This is a work in progress and is stored here primarily
+    for backup purposes.  The IDF framework has been rewritten
+    to support READ/WRITE.  The improved framework can in principle
+    be used for KiCad IDF import/export as well as generic IDF
+    tools such as the IDF to VRML converter (work in progress).
+
+DEPRECATED PATCHES:
+
 idf_tools.patch: [ rev. 4657 ]
     Adds tools for creating IDF component outlines:
         1. idfcyl: creates a cylindrical outline in horizontal or
@@ -30,8 +39,6 @@ idf_tools.patch: [ rev. 4657 ]
         + pcbnew/exporters/idf.{cpp, h} have been refactored; objects
             in common with the dxf2idf tool have been moved into
             pcbnew/exporters/idf_common.{cpp, h}
-
-DEPRECATED PATCHES:
 
 export_vrml.patch: [DEPRECATED; code is KiCad source since rev. 4611]
     Improvements to the VRML export function.
