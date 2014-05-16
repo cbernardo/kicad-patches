@@ -1,7 +1,116 @@
+=== modified file 'pcbnew/exporters/idf_common.cpp'
+--- pcbnew/exporters/idf_common.cpp	2014-02-05 09:27:21 +0000
++++ pcbnew/exporters/idf_common.cpp	2014-02-22 02:04:14 +0000
+@@ -451,6 +451,85 @@
+ }
+ 
+ 
++bool IDF_OUTLINE::IsCCW( void )
++{
++    // note: when outlines are not valid, 'false' is returned
++    switch( outline.size() )
++    {
++    case 0:
++        // no outline
++        return false;
++        break;
++
++    case 1:
++        // circles are always reported as CCW
++        if( outline.front()->IsCircle() )
++            return true;
++        else
++            return false;
++        break;
++
++    case 2:
++        // we may have a closed outline consisting of:
++        // 1. arc and line, winding depends on the arc
++        // 2. 2 arcs, winding depends on larger arc
++        {
++            double a1 = outline.front()->angle;
++            double a2 = outline.back()->angle;
++
++            if( ( a1 < -MIN_ANG || a1 > MIN_ANG )
++                && ( a2 < -MIN_ANG || a2 > MIN_ANG ) )
++            {
++                // we have 2 arcs
++                if( abs( a1 ) >= abs( a2 ) )
++                {
++                    // winding depends on a1
++                    if( a1 < 0.0 )
++                        return false;
++                    else
++                        return true;
++                }
++                else
++                {
++                    if( a2 < 0.0 )
++                        return false;
++                    else
++                        return true;
++                }
++            }
++
++            // we may have a line + arc (or 2 lines)
++            if( a1 < -MIN_ANG )
++                return false;
++
++            if( a1 > MIN_ANG )
++                return true;
++
++            if( a2 < -MIN_ANG )
++                return false;
++
++            if( a2 > MIN_ANG )
++                return true;
++
++            // we have 2 lines (invalid outline)
++            return false;
++        }
++        break;
++
++    default:
++        break;
++    }
++
++    double winding = dir + ( outline.front()->startPoint.x - outline.back()->endPoint.x )
++    * ( outline.front()->startPoint.y + outline.back()->endPoint.y );
++
++    if( winding > 0.0 )
++        return false;
++
++    return true;
++}
++
++
+ void IDF_OUTLINE::push( IDF_SEGMENT* item )
+ {
+     if( !outline.empty() )
+
+=== modified file 'pcbnew/exporters/idf_common.h'
+--- pcbnew/exporters/idf_common.h	2014-02-05 09:27:21 +0000
++++ pcbnew/exporters/idf_common.h	2014-02-22 00:48:07 +0000
+@@ -227,13 +227,7 @@
+     ~IDF_OUTLINE() { Clear(); }
+ 
+     // returns true if the current list of points represents a counterclockwise winding
+-    bool IsCCW( void )
+-    {
+-        if( dir > 0.0 )
+-            return false;
+-
+-        return true;
+-    }
++    bool IsCCW( void );
+ 
+     // clears the internal list of outline segments
+     void Clear( void )
+
 === added file 'utils/idftools/build.sh'
 --- utils/idftools/build.sh	1970-01-01 00:00:00 +0000
-+++ utils/idftools/build.sh	2014-05-15 08:52:56 +0000
-@@ -0,0 +1,112 @@
++++ utils/idftools/build.sh	2014-05-16 07:17:59 +0000
+@@ -0,0 +1,113 @@
 +#! /bin/bash
 +#g++ -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp
 +
@@ -81,7 +190,8 @@
 +
 +if ( ${RICHIO} )
 +    then
-+    if ! ( g++ -Wall -I . -I ../../include `wx-config --cxxflags` -c ../../common/richio.cpp )
++    if ! ( g++ -Wall -I . -I ../../include `wx-config --cxxflags` -c ../../common/richio.cpp \
++            -c ../../common/build_version.cpp)
 +        then
 +        echo -e "\E[31mFAILED TO COMPILE: richio.cpp\E[0m"
 +        exit 1
@@ -106,7 +216,7 @@
 +if ( ${APP} )
 +    then
 +    if ! ( g++ -lGLU idf_parser.o idf_common.o idf_helpers.o idf_outlines.o vrml_board.o \
-+           richio.o test_idf2vrml.o `wx-config --libs` -o testidf2vrml )
++            richio.o test_idf2vrml.o build_version.o `wx-config --libs` -o testidf2vrml )
 +        then
 +        echo -e "\E[31mFAILED TO LINK: testidf2vrml\E[0m"
 +        exit 1
@@ -279,8 +389,8 @@
 
 === added file 'utils/idftools/idf_common.cpp'
 --- utils/idftools/idf_common.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_common.cpp	2014-05-15 07:36:25 +0000
-@@ -0,0 +1,1325 @@
++++ utils/idftools/idf_common.cpp	2014-05-16 04:52:17 +0000
+@@ -0,0 +1,1335 @@
 +/**
 + * file: idf_common.cpp
 + *
@@ -345,7 +455,7 @@
 +    // RECORD 2: X, Y, text Height, text Length, "TEXT"
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() )
++    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading board notes\n";
@@ -502,10 +612,10 @@
 +
 +    if( aBoardUnit == UNIT_THOU )
 +    {
-+        xpos *= 0.0254;
-+        ypos *= 0.0254;
-+        height *= 0.0254;
-+        length *= 0.0254;
++        xpos *= IDF_MM_TO_THOU;
++        ypos *= IDF_MM_TO_THOU;
++        height *= IDF_MM_TO_THOU;
++        length *= IDF_MM_TO_THOU;
 +    }
 +
 +    return true;
@@ -517,10 +627,10 @@
 +    if( aBoardUnit == UNIT_THOU )
 +    {
 +        aBoardFile << setiosflags(ios::fixed) << setprecision(1)
-+                   << (xpos / 0.0254) << " "
-+                   << (ypos / 0.0254) << " "
-+                   << (height / 0.0254) << " "
-+                   << (length / 0.0254) << " ";
++                   << (xpos / IDF_MM_TO_THOU) << " "
++                   << (ypos / IDF_MM_TO_THOU) << " "
++                   << (height / IDF_MM_TO_THOU) << " "
++                   << (length / IDF_MM_TO_THOU) << " ";
 +    }
 +    else
 +    {
@@ -678,7 +788,7 @@
 +    // RECORD 2: DIA, X, Y, Plating Style, REFDES, HOLE TYPE, HOLE OWNER
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() )
++    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading board drilled holes\n";
@@ -903,9 +1013,9 @@
 +
 +    if( aBoardUnit == UNIT_THOU )
 +    {
-+        dia *= 0.0254;
-+        x *= 0.0254;
-+        y *= 0.0254;
++        dia *= IDF_MM_TO_THOU;
++        x *= IDF_MM_TO_THOU;
++        y *= IDF_MM_TO_THOU;
 +    }
 +
 +    return true;
@@ -989,8 +1099,8 @@
 +    }
 +    else
 +    {
-+        aBoardFile << std::setiosflags( std::ios::fixed ) << std::setprecision( 1 ) << (dia / 0.0254) << " "
-+        << std::setprecision( 1 ) << (x / 0.0254) << " " << (y / 0.0254) << " "
++        aBoardFile << std::setiosflags( std::ios::fixed ) << std::setprecision( 1 ) << (dia / IDF_MM_TO_THOU) << " "
++        << std::setprecision( 1 ) << (x / IDF_MM_TO_THOU) << " " << (y / IDF_MM_TO_THOU) << " "
 +            << pltstr.c_str() << " " << refstr.c_str() << " "
 +            << holestr.c_str() << " " << ownstr.c_str() << "\n";
 +    }
@@ -1568,6 +1678,16 @@
 +}
 +
 +
++// returns true if the outline is a circle
++bool IDF_OUTLINE::IsCircle( void )
++{
++    if( outline.front()->IsCircle() )
++        return true;
++
++    return false;
++}
++
++
 +bool IDF_OUTLINE::push( IDF_SEGMENT* item )
 +{
 +    if( !outline.empty() )
@@ -1609,8 +1729,8 @@
 
 === added file 'utils/idftools/idf_common.h'
 --- utils/idftools/idf_common.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_common.h	2014-05-15 07:35:12 +0000
-@@ -0,0 +1,437 @@
++++ utils/idftools/idf_common.h	2014-05-16 00:55:12 +0000
+@@ -0,0 +1,440 @@
 +/**
 + * @file idf_common.h
 + */
@@ -1995,6 +2115,9 @@
 +    // returns true if the current list of points represents a counterclockwise winding
 +    bool IsCCW( void );
 +
++    // returns true if the outline is a circle
++    bool IsCircle( void );
++
 +    // clears the internal list of outline segments
 +    void Clear( void )
 +    {
@@ -2129,6 +2252,291 @@
          {
              if( lead < wireDia )
                  cout << "* WARNING: lead length must be >= wireDia\n";
+
+=== added file 'utils/idftools/idf_example.emn'
+--- utils/idftools/idf_example.emn	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_example.emn	2014-05-16 07:14:53 +0000
+@@ -0,0 +1,206 @@
++.HEADER
++BOARD_FILE 3.0 "Sample File Generator" 10/22/96.16:02:44 1
++sample_board THOU
++.END_HEADER
++
++# This is the first BOARD section
++# SEC1-0
++# SEC1-1
++.BOARD_OUTLINE MCAD
++62.0
++0 5030.5 -120.0 0.0
++0 5187.5 -120.0 0.0
++0 5187.5 2130.0 0.0
++0 5155.0 2130.0 0.0
++0 5155.0 2550.0 -180.0
++0 5187.5 2550.0 0.0
++0 5187.5 4935.0 0.0
++0 4945.0 5145.0 0.0
++0 4945.0 5420.0 0.0
++0 4865.0 5500.0 0.0
++0 210.0 5500.0 0.0
++0 130.0 5420.0 0.0
++0 130.0 5145.0 0.0
++0 -112.5 4935.0 0.0
++0 -112.5 2550.0 0.0
++0 -80.0 2550.0 0.0
++0 -80.0 2130.0 -180.0
++0 -112.5 2130.0 0.0
++0 -112.5 -140.0 0.0
++0 45.5 -140.0 0.0
++0 45.5 -400.0 0.0
++0 2442.5 -400.0 0.0
++0 2442.5 -140.0 0.0
++0 2631.5 -140.0 0.0
++0 2631.5 -400.0 0.0
++0 5030.5 -400.0 0.0
++0 5030.5 -120.0 0.0
++1 2650.0 2350.0 0.0
++1 3000.0 2350.0 360.0
++.END_BOARD_OUTLINE
++
++
++# This is the second BOARD section
++# SEC2-0
++# SEC2-1
++# NOT SEC1-1
++.ROUTE_OUTLINE ECAD
++ALL
++0 5112.5 150.0 0.0
++0 5112.5 2058.2 0.0
++0 5112.5 2621.8 -162.9
++0 5112.5 4863.2 0.0
++0 4878.8 5075.0 0.0
++0 226.4 5075.0 0.0
++0 138.0 4910.3 0.0
++0 138.0 4800.0 0.0
++0 -37.5 4662.5 0.0
++0 -37.5 2621.8 0.0
++0 -37.5 2058.2 -162.9
++0 -37.5 150.0 0.0
++0 162.5 0.0 0.0
++0 4912.5 0.0 0.0
++0 5112.5 150.0 0.0
++.END_ROUTE_OUTLINE
++
++
++# This is the third BOARD section
++# SEC3-0
++# SEC3-1
++.PLACE_OUTLINE MCAD
++TOP 1000.0
++0 5080.0 2034.9 0.0
++0 5080.0 2645.1 -152.9
++0 5080.0 4837.3 0.0
++0 4855.3 5042.5 0.0
++0 252.9 5042.5 0.0
++0 170.5 4896.9 0.0
++0 170.5 4798.4 0.0
++0 -5.0 4659.0 0.0
++0 -5.0 2645.1 0.0
++0 -5.0 2034.9 -152.9
++0 -5.0 182.5 0.0
++0 192.0 32.5 0.0
++0 4883.1 32.5 0.0
++0 5080.0 182.5 0.0
++0 5080.0 2034.9 0.0
++.END_PLACE_OUTLINE
++
++# This is the fourth BOARD section
++# SEC4-0
++# SEC4-1
++.PLACE_OUTLINE UNOWNED
++BOTTOM 200.0
++0 300.0 200.0 0.0
++0 4800.0 200.0 0.0
++0 4800.0 4800.0 0.0
++0 300.0 4800.0 0.0
++0 300.0 200.0 0.0
++.END_PLACE_OUTLINE
++
++
++# This is the fifth BOARD section
++# SEC5-0
++# SEC5-1
++.ROUTE_KEEPOUT ECAD
++ALL
++0 2650.0 2350.0 0.0
++0 3100.0 2350.0 360.0
++.END_ROUTE_KEEPOUT
++
++# This is the sixth BOARD section
++# SEC6-0
++# SEC6-1
++.PLACE_KEEPOUT MCAD
++BOTH 0.0
++0 2650.0 2350.0 0.0
++0 3100.0 2350.0 360.0
++.END_PLACE_KEEPOUT
++
++# This is the seventh BOARD section
++# SEC7-0
++# SEC7-1
++.PLACE_KEEPOUT MCAD
++TOP 300.0
++0 3700.0 5000.0 0.0
++0 3700.0 4300.0 0.0
++0 4000.0 4300.0 0.0
++0 4000.0 3700.0 0.0
++0 5000.0 3700.0 0.0
++0 5000.0 4800.0 0.0
++0 4800.0 5000.0 0.0
++0 3700.0 5000.0 0.0
++.END_PLACE_KEEPOUT
++
++
++# This is the eighth BOARD section
++# SEC8-0
++# SEC8-1
++.DRILLED_HOLES
++30.0 1800.0 100.0 PTH J1 PIN ECAD
++30.0 1700.0 100.0 PTH J1 PIN ECAD
++30.0 1600.0 100.0 PTH J1 PIN ECAD
++30.0 1500.0 100.0 PTH J1 PIN ECAD
++30.0 1400.0 100.0 PTH J1 PIN ECAD
++30.0 1300.0 100.0 PTH J1 PIN ECAD
++30.0 1200.0 100.0 PTH J1 PIN ECAD
++30.0 1100.0 100.0 PTH J1 PIN ECAD
++30.0 1000.0 100.0 PTH J1 PIN ECAD
++30.0 0900.0 100.0 PTH J1 PIN ECAD
++30.0 0800.0 100.0 PTH J1 PIN ECAD
++30.0 0700.0 100.0 PTH J1 PIN ECAD
++30.0 0700.0 200.0 PTH J1 PIN ECAD
++30.0 0800.0 200.0 PTH J1 PIN ECAD
++30.0 0900.0 200.0 PTH J1 PIN ECAD
++30.0 1000.0 200.0 PTH J1 PIN ECAD
++30.0 1100.0 200.0 PTH J1 PIN ECAD
++30.0 1200.0 200.0 PTH J1 PIN ECAD
++30.0 1300.0 200.0 PTH J1 PIN ECAD
++30.0 1400.0 200.0 PTH J1 PIN ECAD
++30.0 1500.0 200.0 PTH J1 PIN ECAD
++100.0 3100.0 -50.0 NPTH J2 MTG ECAD
++100.0 4600.0 -50.0 NPTH J2 MTG ECAD
++100.0 500.0 -50.0 NPTH J1 MTG ECAD
++100.0 2000.0 -50.0 NPTH J1 MTG ECAD
++93.0 5075.0 0.0 PTH BOARD MTG UNOWNED
++93.0 0.0 4800.0 NPTH BOARD TOOL MCAD
++93.0 0.0 0.0 PTH BOARD MTG UNOWNED
++.END_DRILLED_HOLES
++
++
++# This is the ninth BOARD section
++# SEC9-0
++# SEC9-1
++.NOTES
++3500.0 3300.0 75.0 2500.0 "This component rotated 14 degrees"
++400.0 4400.0 75.0 3200.0 "Component height limited by enclosure latch"
++1800.0 300.0 75.0 1700.0 "Do not move connectors!"
++.END_NOTES
++
++# This is the tenth and ALWAYS FINAL BOARD section
++# SEC10-0
++# SEC10-1
++.PLACEMENT
++cs13_a pn-cap C1
++4000.0 1000.0 100.0 0.0 TOP PLACED
++cc1210 pn-cc1210 C2
++3000.0 3500.0 0.0 0.0 TOP PLACED
++cc1210 pn-cc1210 C3
++3200.0 1800.0 0.0 0.0 BOTTOM PLACED
++cc1210 pn-cc1210 C4
++1400.0 2300.0 0.0 270.0 TOP PLACED
++cc1210 pn-cc1210 C5
++1799.5 3518.1 0.0 0.0 BOTTOM PLACED
++conn_din24 connector J1
++1800.0 100.0 0.0 0.0 TOP MCAD
++conn_din24 connector J2
++4400.0 100.0 0.0 0.0 TOP MCAD
++plcc_20 pn-pal16l8-plcc U1
++1800.0 3200.0 0.0 0.0 BOTTOM ECAD
++plcc_20 pn-pal16l8-plcc U2
++3200.0 1800.0 0.0 0.0 TOP PLACED
++dip_14w pn-hs346-dip U3
++3000.0 3300.0 0.0 14.0 TOP PLACED
++dip_14w pn-hs346-dip U4
++2200.0 2500.0 0.0 270.0 TOP PLACED
++.END_PLACEMENT
+
+=== added file 'utils/idftools/idf_example.emp'
+--- utils/idftools/idf_example.emp	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_example.emp	2014-05-16 07:16:25 +0000
+@@ -0,0 +1,69 @@
++.HEADER
++LIBRARY_file 3.0 "Sample File Generator" 10/22/96.16:41:37 1
++.END_HEADER
++
++# Component #1/5
++.ELECTRICAL
++cs13_a pn-cap THOU 150.0
++0 -55.0 55.0 0.0
++0 -55.0 -55.0 0.0
++0 135.0 -55.0 0.0
++0 135.0 -80.0 0.0
++0 565.0 -80.0 0.0
++0 565.0 -55.0 0.0
++0 755.0 -55.0 0.0
++0 755.0 55.0 0.0
++0 565.0 55.0 0.0
++0 565.0 80.0 0.0
++0 135.0 80.0 0.0
++0 135.0 55.0 0.0
++0 -55.0 55.0 0.0
++PROP CAPACITANCE 100.0
++PROP TOLERANCE 5.0
++.END_ELECTRICAL
++
++
++# Component #2/5
++.ELECTRICAL
++cc1210 pn-cc1210 THOU 67.0
++0 -40.0 56.0 0.0
++0 -40.0 -56.0 0.0
++0 182.0 -56.0 0.0
++0 182.0 56.0 0.0
++0 -40.0 56.0 0.0
++PROP CAPACITANCE 0.1
++PROP TOLERANCE 5.0
++.END_ELECTRICAL
++
++# Component #3/5
++.ELECTRICAL
++conn_din24 connector THOU 435.0
++0 -1400.0 -500.0 0.0
++0 300.0 -500.0 0.0
++0 300.0 150.0 0.0
++0 -1400.0 150.0 0.0
++0 -1400.0 -500.0 0.0
++.END_ELECTRICAL
++
++
++# Component #4/5
++.ELECTRICAL
++dip_14w pn-hs346-dip THOU 200.0
++0 350.0 50.0 0.0
++0 -50.0 50.0 0.0
++0 -50.0 -650.0 0.0
++0 350.0 -650.0 0.0
++0 350.0 50.0 0.0
++.END_ELECTRICAL
++
++
++# Component #5/5
++.ELECTRICAL
++plcc_20 pn-pal16l8-plcc THOU 14.0
++0 -200.0 240.0 0.0
++0 -240.0 200.0 0.0
++0 -240.0 -240.0 0.0
++0 240.0 -240.0 0.0
++0 240.0 240.0 0.0
++0 -200.0 240.0 0.0
++.END_ELECTRICAL
 
 === added file 'utils/idftools/idf_helpers.cpp'
 --- utils/idftools/idf_helpers.cpp	1970-01-01 00:00:00 +0000
@@ -2435,8 +2843,8 @@
 
 === added file 'utils/idftools/idf_helpers.h'
 --- utils/idftools/idf_helpers.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_helpers.h	2014-05-15 05:36:13 +0000
-@@ -0,0 +1,65 @@
++++ utils/idftools/idf_helpers.h	2014-05-16 04:51:21 +0000
+@@ -0,0 +1,68 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -2473,6 +2881,9 @@
 +#define IDF_MIN_DIA_MM ( 0.001 )
 +#define IDF_MIN_DIA_THOU ( 0.00039 )
 +
++// conversion between mm and thou
++#define IDF_MM_TO_THOU 0.0254
++
 +namespace IDF3
 +{
 +
@@ -2506,8 +2917,8 @@
 
 === added file 'utils/idftools/idf_outlines.cpp'
 --- utils/idftools/idf_outlines.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_outlines.cpp	2014-05-15 07:45:07 +0000
-@@ -0,0 +1,2526 @@
++++ utils/idftools/idf_outlines.cpp	2014-05-16 07:17:35 +0000
+@@ -0,0 +1,2601 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -2633,7 +3044,7 @@
 +                        return false;
 +                    }
 +
-+                    if( outlines.size() > 1 && outlines.back()->IsCCW() )
++                    if( outlines.size() > 1 && outlines.back()->IsCCW() && !outlines.back()->IsCircle() )
 +                    {
 +                        ERROR << "cutout points are not in CW order\n";
 +                        return false;
@@ -2846,8 +3257,8 @@
 +        // the line was successfully read; convert to mm if necessary
 +        if( unit == UNIT_THOU )
 +        {
-+            x *= 0.0254;
-+            y *= 0.0254;
++            x *= IDF_MM_TO_THOU;
++            y *= IDF_MM_TO_THOU;
 +        }
 +
 +        if( npts++ == 0 )
@@ -2934,7 +3345,7 @@
 +
 +    while( itS != itE )
 +    {
-+        aBoardFile << "#" << *itS << "\n";
++        aBoardFile << "# " << *itS << "\n";
 +        ++itS;
 +    }
 +
@@ -2995,12 +3406,12 @@
 +        else
 +        {
 +            aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+            << (aOutline->front()->startPoint.x / 0.0254) << " "
-+            << (aOutline->front()->startPoint.y / 0.0254) << " 0\n";
++            << (aOutline->front()->startPoint.x / IDF_MM_TO_THOU) << " "
++            << (aOutline->front()->startPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +
 +            aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+            << (aOutline->front()->endPoint.x / 0.0254) << " "
-+            << (aOutline->front()->endPoint.y / 0.0254) << " 360\n";
++            << (aOutline->front()->endPoint.x / IDF_MM_TO_THOU) << " "
++            << (aOutline->front()->endPoint.y / IDF_MM_TO_THOU) << " 360\n";
 +        }
 +
 +        return !aBoardFile.fail();
@@ -3057,22 +3468,22 @@
 +            if( aOutline->front()->angle < MIN_ANG && aOutline->front()->angle > -MIN_ANG )
 +            {
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << (aOutline->front()->endPoint.x / 0.0254) << " "
-+                << (aOutline->front()->endPoint.y / 0.0254) << " 0\n";
++                << (aOutline->front()->endPoint.x / IDF_MM_TO_THOU) << " "
++                << (aOutline->front()->endPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << (aOutline->front()->startPoint.x / 0.0254) << " "
-+                << (aOutline->front()->startPoint.y / 0.0254) << " 0\n";
++                << (aOutline->front()->startPoint.x / IDF_MM_TO_THOU) << " "
++                << (aOutline->front()->startPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +            }
 +            else
 +            {
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << (aOutline->front()->endPoint.x / 0.0254) << " "
-+                << (aOutline->front()->endPoint.y / 0.0254) << " 0\n";
++                << (aOutline->front()->endPoint.x / IDF_MM_TO_THOU) << " "
++                << (aOutline->front()->endPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << (aOutline->front()->startPoint.x / 0.0254) << " "
-+                << (aOutline->front()->startPoint.y / 0.0254) << " "
++                << (aOutline->front()->startPoint.x / IDF_MM_TO_THOU) << " "
++                << (aOutline->front()->startPoint.y / IDF_MM_TO_THOU) << " "
 +                << setprecision(5) << -aOutline->front()->angle << "\n";
 +            }
 +        }
@@ -3101,14 +3512,14 @@
 +                if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
 +                {
 +                    aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                    << ((*bo)->startPoint.x / 0.0254) << " "
-+                    << ((*bo)->startPoint.y / 0.0254) << " 0\n";
++                    << ((*bo)->startPoint.x / IDF_MM_TO_THOU) << " "
++                    << ((*bo)->startPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +                }
 +                else
 +                {
 +                    aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                    << ((*bo)->startPoint.x / 0.0254) << " "
-+                    << ((*bo)->startPoint.y / 0.0254) << " "
++                    << ((*bo)->startPoint.x / IDF_MM_TO_THOU) << " "
++                    << ((*bo)->startPoint.y / IDF_MM_TO_THOU) << " "
 +                    << setprecision(5) << -(*bo)->angle << "\n";
 +                }
 +            }
@@ -3151,22 +3562,22 @@
 +            if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
 +            {
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << ((*bo)->startPoint.x / 0.0254) << " "
-+                << ((*bo)->startPoint.y / 0.0254) << " 0\n";
++                << ((*bo)->startPoint.x / IDF_MM_TO_THOU) << " "
++                << ((*bo)->startPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << ((*bo)->endPoint.x / 0.0254) << " "
-+                << ((*bo)->endPoint.y / 0.0254) << " 0\n";
++                << ((*bo)->endPoint.x / IDF_MM_TO_THOU) << " "
++                << ((*bo)->endPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +            }
 +            else
 +            {
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << ((*bo)->startPoint.x / 0.0254) << " "
-+                << ((*bo)->startPoint.y / 0.0254) << " 0\n";
++                << ((*bo)->startPoint.x / IDF_MM_TO_THOU) << " "
++                << ((*bo)->startPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +
 +                aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                << ((*bo)->endPoint.x / 0.0254) << " "
-+                << ((*bo)->endPoint.y / 0.0254) << " "
++                << ((*bo)->endPoint.x / IDF_MM_TO_THOU) << " "
++                << ((*bo)->endPoint.y / IDF_MM_TO_THOU) << " "
 +                << setprecision(5) << (*bo)->angle << "\n";
 +            }
 +        }
@@ -3197,14 +3608,14 @@
 +                if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
 +                {
 +                    aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                    << ((*bo)->endPoint.x / 0.0254) << " "
-+                    << ((*bo)->endPoint.y / 0.0254) << " 0\n";
++                    << ((*bo)->endPoint.x / IDF_MM_TO_THOU) << " "
++                    << ((*bo)->endPoint.y / IDF_MM_TO_THOU) << " 0\n";
 +                }
 +                else
 +                {
 +                    aBoardFile << aIndex << " " << setiosflags(ios::fixed) << setprecision(1)
-+                    << ((*bo)->endPoint.x / 0.0254) << " "
-+                    << ((*bo)->endPoint.y / 0.0254) << " "
++                    << ((*bo)->endPoint.x / IDF_MM_TO_THOU) << " "
++                    << ((*bo)->endPoint.y / IDF_MM_TO_THOU) << " "
 +                    << setprecision(5) << (*bo)->angle << "\n";
 +                }
 +            }
@@ -3314,6 +3725,12 @@
 +
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
++    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
++    {
++        ERROR << "bad .BOARD_OUTLINE section (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -3339,13 +3756,19 @@
 +    }
 +
 +    if( unit == UNIT_THOU )
-+        thickness *= 0.0254;
++        thickness *= IDF_MM_TO_THOU;
 +
 +    // read RECORD 3 values
 +    readOutlines( aBoardFile );
 +
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
++
++    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    {
++        ERROR << "bad .BOARD_OUTLINE section (premature end)\n";
++        return false;
++    }
 +
 +    idx = 0;
 +    if( comment )
@@ -3354,8 +3777,7 @@
 +        return false;
 +    }
 +
-+    if( !GetIDFString( iline, token, quoted, idx )
-+        || !CompareToken( ".END_BOARD_OUTLINE", token ) )
++    if( !CompareToken( ".END_BOARD_OUTLINE", iline ) )
 +    {
 +        ERROR << "bad .BOARD_OUTLINE section (no .END_BOARD_OUTLINE)\n";
 +        return false;
@@ -3376,7 +3798,7 @@
 +    if( unit == UNIT_MM )
 +        aBoardFile << setiosflags(ios::fixed) << setprecision(5) << thickness << "\n";
 +    else
-+        aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (thickness / 0.025) << "\n";
++        aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (thickness / IDF_MM_TO_THOU) << "\n";
 +
 +    if( !writeOutlines( aBoardFile ) )
 +        return false;
@@ -3736,6 +4158,12 @@
 +        // [outline identifier] [thickness] [board side: Top/Bot]
 +        while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
++        if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++        {
++            ERROR << "bad .OTHER_OUTLINE section (premature end)\n";
++            return false;
++        }
++
 +        idx = 0;
 +        if( comment )
 +        {
@@ -3769,7 +4197,7 @@
 +        }
 +
 +        if( unit == UNIT_THOU )
-+            thickness *= 0.0254;
++            thickness *= IDF_MM_TO_THOU;
 +
 +        if( !GetIDFString( iline, token, quoted, idx ) )
 +        {
@@ -3791,6 +4219,12 @@
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
++    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    {
++        ERROR << "bad .OTHER_OUTLINE/.VIA_KEEPOUT section (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -3800,8 +4234,7 @@
 +
 +    if( outlineType == OTLN_OTHER )
 +    {
-+        if( !GetIDFString( iline, token, quoted, idx )
-+            || !CompareToken( ".END_OTHER_OUTLINE", token ) )
++        if( !CompareToken( ".END_OTHER_OUTLINE", iline ) )
 +        {
 +            ERROR << "bad .OTHER_OUTLINE section (no .END_OTHER_OUTLINE)\n";
 +            return false;
@@ -3809,8 +4242,7 @@
 +    }
 +    else
 +    {
-+        if( !GetIDFString( iline, token, quoted, idx )
-+            || !CompareToken( ".END_VIA_KEEPOUT", token ) )
++        if( !CompareToken( ".END_VIA_KEEPOUT", iline ) )
 +        {
 +            ERROR << "bad .VIA_KEEPOUT section (no .END_VIA_KEEPOUT)\n";
 +            return false;
@@ -3844,7 +4276,7 @@
 +        if( unit == UNIT_MM )
 +            aBoardFile << setiosflags(ios::fixed) << setprecision(5) << thickness << " ";
 +        else
-+            aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (thickness / 0.0254) << " ";
++            aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (thickness / IDF_MM_TO_THOU) << " ";
 +
 +        switch( side )
 +        {
@@ -3970,6 +4402,12 @@
 +
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
++    if( !aBoardFile.good() )
++    {
++        ERROR << "bad .ROUTE_OUTLINE/KEEPOUT section (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -4003,6 +4441,12 @@
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
++    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    {
++        ERROR << "bad .ROUTE_OUTLINE/KEEPOUT section (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -4012,8 +4456,7 @@
 +
 +    if( outlineType == OTLN_ROUTE )
 +    {
-+        if( !GetIDFString( iline, token, quoted, idx )
-+            || !CompareToken( ".END_ROUTE_OUTLINE", token ) )
++        if( !CompareToken( ".END_ROUTE_OUTLINE", iline ) )
 +        {
 +            ERROR << "bad .ROUTE_OUTLINE section (no .END_ROUTE_OUTLINE)\n";
 +            return false;
@@ -4021,8 +4464,7 @@
 +    }
 +    else
 +    {
-+        if( !GetIDFString( iline, token, quoted, idx )
-+            || !CompareToken( ".END_ROUTE_KEEPOUT", token ) )
++        if( !CompareToken( ".END_ROUTE_KEEPOUT", iline ) )
 +        {
 +            ERROR << "bad .ROUTE_KEEPOUT section (no .END_ROUTE_KEEPOUT)\n";
 +            return false;
@@ -4201,6 +4643,12 @@
 +
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
++    if( !aBoardFile.good() )
++    {
++        ERROR << "bad .PLACE_OUTLINE/KEEPOUT section (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -4240,13 +4688,19 @@
 +    }
 +
 +    if( unit == UNIT_THOU )
-+        thickness *= 0.0254;
++        thickness *= IDF_MM_TO_THOU;
 +
 +    // read RECORD 3 values
 +    readOutlines( aBoardFile );
 +
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
++
++    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    {
++        ERROR << "bad .PLACE_OUTLINE/KEEPOUT section (premature end)\n";
++        return false;
++    }
 +
 +    idx = 0;
 +    if( comment )
@@ -4313,7 +4767,7 @@
 +    if( unit == UNIT_MM )
 +        aBoardFile << setiosflags(ios::fixed) << setprecision(5) << thickness << "\n";
 +    else
-+        aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (thickness / 0.0254) << "\n";
++        aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (thickness / IDF_MM_TO_THOU) << "\n";
 +
 +    // write RECORD 3
 +    if( !writeOutlines( aBoardFile ) )
@@ -4467,6 +4921,12 @@
 +    // [side: Top/Bot/Both ] [component group name]
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
++    if( !aBoardFile.good() )
++    {
++        ERROR << "bad .PLACE_REGION section (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -4501,6 +4961,12 @@
 +
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
++
++    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    {
++        ERROR << "bad .PLACE_REGION section (premature end)\n";
++        return false;
++    }
 +
 +    idx = 0;
 +    if( comment )
@@ -4718,6 +5184,12 @@
 +
 +    while( aLibFile.good() && !FetchIDFLine( aLibFile, iline, comment, pos ) );
 +
++    if( !aLibFile.good() )
++    {
++        ERROR << "bad component outline data (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -4786,7 +5258,7 @@
 +    }
 +
 +    if( unit == UNIT_THOU )
-+        thickness *= 0.0254;
++        thickness *= IDF_MM_TO_THOU;
 +
 +    // read RECORD 3 values
 +    readOutlines( aLibFile );
@@ -4800,6 +5272,12 @@
 +    // check RECORD 4
 +    while( aLibFile.good() && !FetchIDFLine( aLibFile, iline, comment, pos ) );
 +
++    if( !aLibFile.good() && aLibFile.eof() || iline.empty() )
++    {
++        ERROR << "bad component outline data (premature end)\n";
++        return false;
++    }
++
 +    idx = 0;
 +    if( comment )
 +    {
@@ -4809,8 +5287,7 @@
 +
 +    if( compType == COMP_ELEC )
 +    {
-+        if( !GetIDFString( iline, token, quoted, idx )
-+            || !CompareToken( ".END_ELECTRICAL", token ) )
++        if( !CompareToken( ".END_ELECTRICAL", iline ) )
 +        {
 +            ERROR << "bad component outline (no .END_ELECTRICAL)\n";
 +            return false;
@@ -4818,8 +5295,7 @@
 +    }
 +    else
 +    {
-+        if( !GetIDFString( iline, token, quoted, idx )
-+            || !CompareToken( ".END_MECHANICAL", token ) )
++        if( !CompareToken( ".END_MECHANICAL", iline ) )
 +        {
 +            ERROR << "corrupt .MECHANICAL outline\n";
 +            return false;
@@ -4837,6 +5313,12 @@
 +        return false;
 +    }
 +
++    if( refNum == 0 )
++    {
++        cerr << "* XXX: no references in outline: '" << GetUID() << "'\n";
++        return true;    // nothing to do
++    }
++
 +    writeComments( aLibFile );
 +
 +    // note: the outline section is required, even if it is empty
@@ -4852,7 +5334,7 @@
 +    if( unit == UNIT_MM )
 +        aLibFile << "MM " << setiosflags(ios::fixed) << setprecision(5) << thickness << "\n";
 +    else
-+        aLibFile << "THOU " << setiosflags(ios::fixed) << setprecision(1) << (thickness / 0.0254) << "\n";
++        aLibFile << "THOU " << setiosflags(ios::fixed) << setprecision(1) << (thickness / IDF_MM_TO_THOU) << "\n";
 +
 +    if( !writeOutlines( aLibFile ) )
 +        return false;
@@ -4951,9 +5433,13 @@
 +
 +int IDF3_COMP_OUTLINE::DecrementRef( void )
 +{
-+    if( refNum > 0 )
-+        --refNum;
++    if( refNum == 0 )
++    {
++        ERROR << "BUG: decrementing refNum beyond 0\n";
++        return 0;
++    }
 +
++    --refNum;
 +    return refNum;
 +}
 +
@@ -5338,8 +5824,8 @@
 
 === added file 'utils/idftools/idf_parser.cpp'
 --- utils/idftools/idf_parser.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.cpp	2014-05-16 00:10:55 +0000
-@@ -0,0 +1,3376 @@
++++ utils/idftools/idf_parser.cpp	2014-05-16 07:19:29 +0000
+@@ -0,0 +1,3705 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -5372,6 +5858,7 @@
 +#include <algorithm>
 +#include <macros.h>
 +
++#include <build_version.h>
 +#include <idf_parser.h>
 +#include <idf_helpers.h>
 +
@@ -5513,7 +6000,7 @@
 +    // RECORD 2: 'package name', 'part number', 'Refdes' (any, NOREFDES, BOARD)
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() )
++    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading PLACEMENT SECTION\n";
@@ -5797,9 +6284,9 @@
 +
 +    if( aBoard->GetUnit() == IDF3::UNIT_THOU )
 +    {
-+        xoff *= 0.0254;
-+        yoff *= 0.0254;
-+        zoff *= 0.0254;
++        xoff *= IDF_MM_TO_THOU;
++        yoff *= IDF_MM_TO_THOU;
++        zoff *= IDF_MM_TO_THOU;
 +    }
 +
 +    parent = aBoard->FindComponent( refdes );
@@ -5812,6 +6299,7 @@
 +        {
 +            ERROR << "cannot create component object\n";
 +            aBoardState = IDF3::FILE_INVALID;
++            outline = NULL;
 +            return false;
 +        }
 +
@@ -5840,6 +6328,7 @@
 +                cerr << "* SIDE value has changed from " << GetSideString( tL );
 +                cerr << " to " << GetSideString( side ) << "\n";
 +                aBoardState = IDF3::FILE_INVALID;
++                outline = NULL;
 +                return false;
 +            }
 +
@@ -5864,6 +6353,7 @@
 +            cerr << " to " << GetPlacementString( placement ) << "\n";
 +            cerr << "* line: '" << iline << "'\n";
 +            aBoardState = IDF3::FILE_INVALID;
++            outline = NULL;
 +            return false;
 +        }
 +
@@ -5872,6 +6362,8 @@
 +    // copy internal data to a new object and push it into the component's outline list
 +    IDF3_COMP_OUTLINE_DATA* cdp = new IDF3_COMP_OUTLINE_DATA;
 +    *cdp = *this;
++    outline->IncrementRef();
++    outline = NULL;
 +
 +    if( !parent->AddOutlineData( cdp ) )
 +    {
@@ -5951,8 +6443,8 @@
 +    }
 +    else
 +    {
-+        aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (xpos / 0.0254) << " "
-+        << (ypos / 0.0254) << " "  << (zoff / 0.0254) << " "
++        aBoardFile << setiosflags(ios::fixed) << setprecision(1) << (xpos / IDF_MM_TO_THOU) << " "
++        << (ypos / IDF_MM_TO_THOU) << " "  << (zoff / IDF_MM_TO_THOU) << " "
 +        << setprecision(3) << ang << " ";
 +    }
 +
@@ -5961,19 +6453,19 @@
 +    switch( aPlacement )
 +    {
 +        case PS_PLACED:
-+            aBoardFile << "PLACED\n";
++            aBoardFile << " PLACED\n";
 +            break;
 +
 +        case PS_UNPLACED:
-+            aBoardFile << "UNPLACED\n";
++            aBoardFile << " UNPLACED\n";
 +            break;
 +
 +        case PS_MCAD:
-+            aBoardFile << "MCAD\n";
++            aBoardFile << " MCAD\n";
 +            break;
 +
 +        default:
-+            aBoardFile << "ECAD\n";
++            aBoardFile << " ECAD\n";
 +            break;
 +    }
 +
@@ -6002,7 +6494,14 @@
 +
 +IDF3_COMPONENT::IDF3_COMPONENT( IDF3_BOARD* aParent )
 +{
-+    IDF3_COMPONENT();
++    xpos   = 0.0;
++    ypos   = 0.0;
++    angle  = 0.0;
++
++    hasPosition = false;
++    placement   = PS_INVALID;
++    layer       = LYR_INVALID;
++
 +    parent = aParent;
 +    return;
 +}
@@ -6249,7 +6748,13 @@
 +                                  IDF3::IDF_LAYER& aLayer )
 +{
 +    if( !hasPosition )
++    {
++        aXpos = 0.0;
++        aYpos = 0.0;
++        aAngle = 0.0;
++        aLayer = IDF3::LYR_INVALID;
 +        return false;
++    }
 +
 +    aXpos = xpos;
 +    aYpos = ypos;
@@ -6825,11 +7330,13 @@
 +        return false;
 +    }
 +
++    olnBoard.SetUnit( unit );
++
 +    // RECORD 4:
 +    //      .END_HEADER
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() )
++    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading board header, RECORD 4\n";
@@ -6892,7 +7399,7 @@
 +
 +        if( !aBoardFile.good() )
 +        {
-+            if( aBoardFile.eof() && aBoardState >= IDF3::FILE_OUTLINE && aBoardState < IDF3::FILE_INVALID )
++            if( aBoardFile.eof() && aBoardState >= IDF3::FILE_HEADER && aBoardState < IDF3::FILE_INVALID )
 +                return true;
 +
 +            ERROR;
@@ -7509,8 +8016,14 @@
 +    {
 +        // read in any trailing lines and report on ignored comments (minor fault)
 +        // and any non-comment item (non-compliance with IDFv3)
-+        while( !FetchIDFLine( brd, iline, isComment, pos ) && brd.good() )
++        while( brd.good() )
 +        {
++            while( !FetchIDFLine( brd, iline, isComment, pos ) && brd.good() );
++
++            // normally this is a fault but we have all the data in accordance with specs
++            if( !brd.good() && !brd.eof() || iline.empty() )
++                break;
++
 +            if( isComment )
 +            {
 +                ERROR << "[warning]: trailing comments after PLACEMENT\n";
@@ -7528,7 +8041,7 @@
 +
 +    brd.close();
 +    return true;
-+}
++} // ReadBoardFile()
 +
 +
 +// read the library sections (outlines)
@@ -7556,16 +8069,17 @@
 +    {
 +        while( !FetchIDFLine( aLibFile, iline, isComment, pos ) && aLibFile.good() );
 +
-+        if( !aLibFile.good() )
++        if( !aLibFile.good() && !aLibFile.eof() )
 +        {
-+            if( aLibFile.eof() )
-+                return true;
-+
 +            ERROR;
 +            cerr << "problems reading library section\n";
 +            aLibState = IDF3::FILE_INVALID;
 +            return false;
 +        }
++
++        // no data was read; this only happens at eof()
++        if( iline.empty() )
++            return true;
 +
 +        if( isComment )
 +        {
@@ -7799,7 +8313,7 @@
 +    //      .END_HEADER
 +    while( !FetchIDFLine( aLibFile, iline, isComment, pos ) && aLibFile.good() );
 +
-+    if( !aLibFile.good() )
++    if( !aLibFile.good() && !aLibFile.eof() || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading library header, RECORD 3\n";
@@ -7950,21 +8464,322 @@
 +    return true;
 +}
 +
++// write the library file data
++bool IDF3_BOARD::WriteLibFile( const std::string& aFileName )
++{
++    std::ofstream lib;
++
++    lib.open( aFileName.c_str(), std::ios_base::out );
++
++    if( !lib.is_open() )
++    {
++        ERROR;
++        cerr << "could not open library file: '" << aFileName << "'\n";
++        return false;
++    }
++
++    wxDateTime tdate( time( NULL ) );
++
++    lib << ".HEADER\n";
++    lib << "LIBRARY_FILE 3.0 \"Created by KiCad " << TO_UTF8( GetBuildVersion() );
++    lib << "\" " << setfill( '0' ) << setw(4) << tdate.GetYear();
++    lib << "/" << setw(2) << tdate.GetMonth() << "/" << tdate.GetDay();
++    lib << "." << tdate.GetHour() << ":" << tdate.GetMinute() << ":" << tdate.GetSecond();
++    lib << " 1\n";
++    lib << ".END_HEADER\n\n";
++
++    lib << setw(1) << setfill( ' ' );
++
++    std::map< std::string, IDF3_COMP_OUTLINE*>::iterator its = compOutlines.begin();
++    std::map< std::string, IDF3_COMP_OUTLINE*>::iterator ite = compOutlines.end();
++
++    while( its != ite )
++    {
++        its->second->WriteData( lib );
++        ++its;
++    }
++
++    bool ok = !lib.fail();
++
++    lib.close();
++
++    return ok;
++}
++
++// write the board file data
++bool IDF3_BOARD::WriteBoardFile( const std::string& aFileName )
++{
++    std::ofstream brd;
++
++    brd.open( aFileName.c_str(), std::ios_base::out );
++
++    if( !brd.is_open() )
++    {
++        ERROR;
++        cerr << "could not open board file: '" << aFileName << "'\n";
++        return false;
++    }
++
++    wxDateTime tdate( time( NULL ) );
++
++    brd << ".HEADER\n";
++    brd << "BOARD_FILE 3.0 \"Created by KiCad " << TO_UTF8( GetBuildVersion() );
++    brd << "\" " << setfill( '0' ) << setw(4) << tdate.GetYear();
++    brd << "/" << setw(2) << tdate.GetMonth() << "/" << tdate.GetDay();
++    brd << "." << tdate.GetHour() << ":" << tdate.GetMinute() << ":" << tdate.GetSecond();
++    brd << " 1\n";
++
++    if( boardName.empty() )
++        brd << "\"BOARD WITH NO NAME\" ";
++    else
++        brd << "\"" << boardName << "\" ";
++
++    brd << setw(1) << setfill( ' ' );
++
++    if( unit == IDF3::UNIT_MM )
++        brd << "MM\n";
++    else
++        brd << "THOU\n";
++
++    brd << ".END_HEADER\n\n";
++
++    // write the BOARD_OUTLINE
++    if( !olnBoard.WriteData( brd ) )
++    {
++        ERROR << "problems writing BOARD OUTLINE\n";
++        brd.close();
++        return false;
++    }
++
++    // OTHER outlines
++    do
++    {
++        std::map<std::string, OTHER_OUTLINE*>::iterator its = olnOther.begin();
++        std::map<std::string, OTHER_OUTLINE*>::iterator ite = olnOther.end();
++
++        while( (its != ite) && its->second->WriteData( brd ) ) ++its;
++
++    } while( 0 );
++
++    // ROUTE outlines
++    do
++    {
++        std::list<ROUTE_OUTLINE*>::iterator its = olnRoute.begin();
++        std::list<ROUTE_OUTLINE*>::iterator ite = olnRoute.end();
++
++        while( (its != ite) && (*its)->WriteData( brd ) ) ++its;
++
++    } while( 0 );
++
++    // PLACEMENT outlines
++    do
++    {
++        std::list<PLACE_OUTLINE*>::iterator its = olnPlace.begin();
++        std::list<PLACE_OUTLINE*>::iterator ite = olnPlace.end();
++
++        while( (its != ite) && (*its)->WriteData( brd ) ) ++its;
++
++    } while( 0 );
++
++    // ROUTE KEEPOUT outlines
++    do
++    {
++        std::list<ROUTE_KO_OUTLINE*>::iterator its = olnRouteKeepout.begin();
++        std::list<ROUTE_KO_OUTLINE*>::iterator ite = olnRouteKeepout.end();
++
++        while( (its != ite) && (*its)->WriteData( brd ) ) ++its;
++
++    } while( 0 );
++
++    // VIA KEEPOUT outlines
++    do
++    {
++        std::list<VIA_KO_OUTLINE*>::iterator its = olnViaKeepout.begin();
++        std::list<VIA_KO_OUTLINE*>::iterator ite = olnViaKeepout.end();
++
++        while( (its != ite) && (*its)->WriteData( brd ) ) ++its;
++
++    } while( 0 );
++
++    // PLACE KEEPOUT outlines
++    do
++    {
++        std::list<PLACE_KO_OUTLINE*>::iterator its = olnPlaceKeepout.begin();
++        std::list<PLACE_KO_OUTLINE*>::iterator ite = olnPlaceKeepout.end();
++
++        while( (its != ite) && (*its)->WriteData( brd ) ) ++its;
++
++    } while( 0 );
++
++    // PLACEMENT GROUP outlines
++    do
++    {
++        std::map<std::string, GROUP_OUTLINE*>::iterator its = olnGroup.begin();
++        std::map<std::string, GROUP_OUTLINE*>::iterator ite = olnGroup.end();
++
++        while( (its != ite) && its->second->WriteData( brd ) ) ++its;
++
++    } while( 0 );
++
++    // Drilled holes
++    do
++    {
++        std::list<std::string>::iterator itds = drillComments.begin();
++        std::list<std::string>::iterator itde = drillComments.end();
++
++        while( itds != itde )
++        {
++            brd << "# " << *itds << "\n";
++            ++itds;
++        }
++
++        brd << ".DRILLED_HOLES\n";
++
++        std::list<IDF_DRILL_DATA*>::iterator itbs = board_drills.begin();
++        std::list<IDF_DRILL_DATA*>::iterator itbe = board_drills.end();
++
++        while( itbs != itbe )
++        {
++            (*itbs)->Write( brd, unit );
++            ++itbs;
++        }
++
++        std::map< std::string, IDF3_COMPONENT*>::iterator itcs = components.begin();
++        std::map< std::string, IDF3_COMPONENT*>::iterator itce = components.end();
++
++        while( itcs != itce )
++        {
++            itcs->second->WriteDrillData( brd );
++            ++itcs;
++        }
++
++        brd << ".END_DRILLED_HOLES\n\n";
++    } while( 0 );
++
++    // Notes
++    if( !notes.empty() )
++    {
++        std::list<std::string>::iterator itncs = noteComments.begin();
++        std::list<std::string>::iterator itnce = noteComments.end();
++
++        while( itncs != itnce )
++        {
++            brd << "# " << *itncs << "\n";
++            ++itncs;
++        }
++
++        brd << ".NOTES\n";
++
++        std::list<IDF_NOTE*>::iterator itns = notes.begin();
++        std::list<IDF_NOTE*>::iterator itne = notes.end();
++
++        while( itns != itne )
++        {
++            (*itns)->WriteNote( brd, unit );
++            ++itns;
++        }
++
++        brd << ".END_NOTES\n\n";
++
++    }
++
++    // Placement
++    if( !components.empty() )
++    {
++        std::list<std::string>::iterator itpcs = placeComments.begin();
++        std::list<std::string>::iterator itpce = placeComments.end();
++
++        while( itpcs != itpce )
++        {
++            brd << "# " << *itpcs << "\n";
++            ++itpcs;
++        }
++
++        std::map< std::string, IDF3_COMPONENT*>::iterator itcs = components.begin();
++        std::map< std::string, IDF3_COMPONENT*>::iterator itce = components.end();
++
++        brd << ".PLACEMENT\n";
++
++        while( itcs != itce )
++        {
++            itcs->second->WritePlaceData( brd );
++            ++itcs;
++        }
++
++        brd << ".END_PLACEMENT\n";
++    }
++
++    bool ok = !brd.fail();
++    brd.close();
++
++    return ok;
++}
 +
 +bool IDF3_BOARD::WriteFile( const wxString& aFullFileName, bool aUnitMM, bool aForceUnitFlag )
 +{
-+    if( aUnitMM )
++    if( aUnitMM == IDF3::UNIT_MM )
 +        SetUnit( IDF3::UNIT_MM, aForceUnitFlag );
 +    else
 +        SetUnit( IDF3::UNIT_THOU, aForceUnitFlag );
 +
-+#warning TO BE IMPLEMENTED
-+    /*
-+     * 1. Check that the file extension is 'emn'
-+     * 2. Write the *.emn file according to the IDFv3 spec
-+     * 3. Write the *.emp file according to the IDFv3 spec
-+     */
-+    return false;
++    // 1. Check that the file extension is 'emn'
++    // 2. Write the *.emn file according to the IDFv3 spec
++    // 3. Write the *.emp file according to the IDFv3 spec
++
++    std::string fname = TO_UTF8( aFullFileName );
++
++    wxFileName brdname( aFullFileName );
++    wxFileName libname( aFullFileName );
++
++    brdname.SetExt( wxT( "emn" ) );
++    libname.SetExt( wxT( "emp" ) );
++
++    std::string bfname = TO_UTF8( aFullFileName );
++
++    if( !brdname.IsOk() )
++    {
++        ERROR;
++        cerr << "invalid file name: '" << bfname << "'\n";
++        errno = EINVAL;
++        return false;
++    }
++
++    if( brdname.FileExists() && !brdname.IsFileWritable() )
++    {
++        ERROR;
++        cerr << "cannot overwrite existing board file\n";
++        cerr << "* Filename: '" << bfname << "'\n";
++        errno = EACCES;
++        return false;
++    }
++
++    bfname = TO_UTF8( brdname.GetFullPath() );
++    std::string lfname = TO_UTF8( libname.GetFullPath() );
++
++    if( libname.FileExists() && !libname.IsFileWritable() )
++    {
++        ERROR;
++        cerr << "cannot overwrite existing library file\n";
++        cerr << "* Filename: '" << lfname << "'\n";
++        errno = EACCES;
++        return false;
++    }
++
++    if( !WriteLibFile( lfname ) )
++    {
++        ERROR;
++        cerr << "problems writing library file: '" << lfname << "'\n";
++        return false;
++    }
++
++    if( !WriteBoardFile( bfname ) )
++    {
++        ERROR;
++        cerr << "problems writing board file: '" << bfname << "'\n";
++        return false;
++    }
++
++    return true;
 +}
 +
 +
@@ -8719,7 +9534,7 @@
 
 === added file 'utils/idftools/idf_parser.h'
 --- utils/idftools/idf_parser.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.h	2014-05-15 23:47:14 +0000
++++ utils/idftools/idf_parser.h	2014-05-16 05:00:05 +0000
 @@ -0,0 +1,355 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
@@ -8880,12 +9695,6 @@
 +class IDF3_BOARD
 +{
 +private:
-+
-+    // XXX - can the board retain slots separately to work around the
-+    // problem of no slotted holes in the IDF spec? Otherwise it would
-+    // be extremely difficult for modules to move their slotted holes.
-+    // Slots should be identified automatically and their centers calculated
-+    // for reference.
 +    std::list< IDF_NOTE* >     notes;                           // IDF notes
 +    std::list< std::string >   noteComments;                    // comment list for NOTES section
 +    std::list< std::string >   drillComments;                   // comment list for DRILL section
@@ -8894,7 +9703,7 @@
 +    std::map< std::string, IDF3_COMPONENT*> components;         // drill and placement data for components
 +    std::map< std::string, IDF3_COMP_OUTLINE*> compOutlines;    // component outlines (data for library file)
 +    std::string boardName;
-+    double boardThickness;
++    double boardThickness; // XXX: deprecate; this is stored in the board outline
 +    IDF3::FILE_STATE state;
 +    IDF3::CAD_TYPE   cadType;
 +    IDF3::IDF_UNIT   unit;
@@ -8946,12 +9755,18 @@
 +    // read the board file data
 +    bool ReadBoardFile( const std::string& aFileName );
 +
++    // write the board file data
++    bool WriteBoardFile( const std::string& aFileName );
++
 +    // read the library sections (outlines)
 +    bool ReadLibSection( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState, IDF3_BOARD* aBoard );
 +    // read the library HEADER
 +    bool ReadLibHeader( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState );
 +    // read the library file data
 +    bool ReadLibFile( const std::string& aFileName );
++
++    // write the library file data
++    bool WriteLibFile( const std::string& aFileName );
 +
 +public:
 +    IDF3_BOARD( IDF3::CAD_TYPE aCadType );
@@ -9149,8 +9964,8 @@
 
 === added file 'utils/idftools/test_idf2vrml.cpp'
 --- utils/idftools/test_idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/test_idf2vrml.cpp	2014-05-15 06:51:51 +0000
-@@ -0,0 +1,81 @@
++++ utils/idftools/test_idf2vrml.cpp	2014-05-16 04:44:44 +0000
+@@ -0,0 +1,93 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -9196,6 +10011,9 @@
 +#include <idf_parser.h>
 +#include <vrml_board.h>
 +
++#define OUTFILE "xxx_test.emn"
++
++
 +using namespace std;
 +
 +#define CLEANUP do { \
@@ -9221,10 +10039,19 @@
 +
 +    IDF3_BOARD pcb( IDF3::CAD_ELEC );
 +
++    cout << "** Reading file: " << argv[1] << "\n";
 +    if( !pcb.ReadFile( FROM_UTF8( argv[1] ) ) )
 +    {
 +        CLEANUP;
 +        cerr << "* Could not read file: " << argv[1] << "\n";
++        return -1;
++    }
++
++    cout << "** Writing file: " << OUTFILE << "\n";
++    if( !pcb.WriteFile( FROM_UTF8( OUTFILE ), IDF3::UNIT_THOU, false ) )
++    {
++        CLEANUP;
++        cerr << "* Could not rewrite file\n";
 +        return -1;
 +    }
 +
