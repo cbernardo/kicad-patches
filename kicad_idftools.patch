@@ -109,7 +109,7 @@
 
 === added file 'utils/idftools/build.sh'
 --- utils/idftools/build.sh	1970-01-01 00:00:00 +0000
-+++ utils/idftools/build.sh	2014-05-16 07:17:59 +0000
++++ utils/idftools/build.sh	2014-05-17 01:44:07 +0000
 @@ -0,0 +1,113 @@
 +#! /bin/bash
 +#g++ -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp
@@ -120,11 +120,11 @@
 +# set these flags to (re)build each unit
 +IDF_HELPERS=false
 +IDF_OUTLINES=false
-+IDF_PARSER=true
++IDF_PARSER=false
 +IDF_COMMON=false
 +VRML_BOARD=false
 +RICHIO=false
-+MAIN=false
++MAIN=true
 +APP=true
 +
 +
@@ -154,7 +154,7 @@
 +
 +if ( ${IDF_PARSER} )
 +    then
-+    if ! ( g++ -Wall -I . -I ../../include `wx-config --cxxflags` -c idf_parser.cpp )
++    if ! ( g++ -g -Wall -I . -I ../../include `wx-config --cxxflags` -c idf_parser.cpp )
 +        then
 +        echo -e "\E[31mFAILED TO COMPILE: idf_parser.cpp\E[0m"
 +        exit 1
@@ -2540,8 +2540,8 @@
 
 === added file 'utils/idftools/idf_helpers.cpp'
 --- utils/idftools/idf_helpers.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_helpers.cpp	2014-05-15 08:32:04 +0000
-@@ -0,0 +1,298 @@
++++ utils/idftools/idf_helpers.cpp	2014-05-16 07:57:50 +0000
+@@ -0,0 +1,295 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -2591,23 +2591,20 @@
 +    // A comment begins with a '#' and must be the first character on the line
 +    if( aLine[0] == '#' )
 +    {
-+        // opening '#' and trailing spaces are stripped; leading spaces are preserved
++        // opening '#' is stripped
 +        isComment = true;
 +        aLine.erase( aLine.begin() );
-+
-+        while( !aLine.empty() && isspace( *aLine.rbegin() ) )
-+            aLine.erase( --aLine.end() );
-+
-+        return true;
 +    }
 +
++    // strip leading and trailing spaces
 +    while( !aLine.empty() && isspace( *aLine.begin() ) )
 +        aLine.erase( aLine.begin() );
 +
 +    while( !aLine.empty() && isspace( *aLine.rbegin() ) )
 +        aLine.erase( --aLine.end() );
 +
-+    if( aLine.empty() )
++    // a comment line may be empty to improve human readability
++    if( aLine.empty() && !isComment )
 +        return false;
 +
 +    return true;
@@ -2843,7 +2840,7 @@
 
 === added file 'utils/idftools/idf_helpers.h'
 --- utils/idftools/idf_helpers.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_helpers.h	2014-05-16 04:51:21 +0000
++++ utils/idftools/idf_helpers.h	2014-05-16 07:53:07 +0000
 @@ -0,0 +1,68 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
@@ -5824,8 +5821,8 @@
 
 === added file 'utils/idftools/idf_parser.cpp'
 --- utils/idftools/idf_parser.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.cpp	2014-05-16 07:19:29 +0000
-@@ -0,0 +1,3705 @@
++++ utils/idftools/idf_parser.cpp	2014-05-17 01:42:54 +0000
+@@ -0,0 +1,3817 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -6845,18 +6842,19 @@
 +
 +IDF3_BOARD::IDF3_BOARD( IDF3::CAD_TYPE aCadType )
 +{
-+    boardThickness = 1.6;
 +    state          = FILE_START;
 +    cadType        = aCadType;
 +    userScale      = 1.0;
 +    userXoff       = 0.0;
 +    userYoff       = 0.0;
-+
++    brdFileVersion = 0;
++    libFileVersion = 0;
 +
 +    // unlike other outlines which are created as necessary,
 +    // the board outline always exists and its parent must
 +    // be set here
 +    olnBoard.SetParent( this );
++    olnBoard.SetThickness( 1.6 );
 +
 +    return;
 +}
@@ -6995,7 +6993,6 @@
 +
 +    } while( 0 );
 +
-+
 +    //iterate through all owned IDF3_COMP_OUTLINE objects and
 +    // set to the same unit IF convert = true
 +    if( convert )
@@ -7029,15 +7026,15 @@
 +        return false;
 +    }
 +
-+    boardThickness = aBoardThickness;
-+    return true;
++    return olnBoard.SetThickness( aBoardThickness );
 +}
 +
 +
 +double IDF3_BOARD::GetBoardThickness( void )
 +{
-+    return boardThickness;
++    return olnBoard.GetThickness();
 +}
++
 +
 +// read the DRILLED HOLES section
 +bool IDF3_BOARD::ReadBrdDrills( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
@@ -7240,6 +7237,7 @@
 +        aBoardState = IDF3::FILE_INVALID;
 +        return false;
 +    }
++    brdSource = token;
 +
 +    if( !GetIDFString( iline, token, quoted, idx ) )
 +    {
@@ -7249,6 +7247,7 @@
 +        aBoardState = IDF3::FILE_INVALID;
 +        return false;
 +    }
++    brdDate = token;
 +
 +    if( !GetIDFString( iline, token, quoted, idx ) )
 +    {
@@ -7257,6 +7256,17 @@
 +        cerr << "* Violation of specification for HEADER section, RECORD 2, FIELD 5: no Board File Version number\n";
 +        aBoardState = IDF3::FILE_INVALID;
 +        return false;
++    }
++    std::istringstream istr;
++    istr.str( token );
++
++    istr >> brdFileVersion;
++
++    if( istr.fail() )
++    {
++        ERROR << "invalid Board File Version in header\n";
++        cerr << "* Setting default version of 1\n";
++        brdFileVersion = 1;
 +    }
 +
 +    if( quoted )
@@ -8280,6 +8290,7 @@
 +        aLibState = IDF3::FILE_INVALID;
 +        return false;
 +    }
++    libSource = token;
 +
 +
 +    if( !GetIDFString( iline, token, quoted, idx ) )
@@ -8290,6 +8301,7 @@
 +        aLibState = IDF3::FILE_INVALID;
 +        return false;
 +    }
++    libDate = token;
 +
 +    if( !GetIDFString( iline, token, quoted, idx ) )
 +    {
@@ -8298,6 +8310,17 @@
 +        cerr << "* Violation of specification for HEADER section, RECORD 2, FIELD 5: no Board File Version number\n";
 +        aLibState = IDF3::FILE_INVALID;
 +        return false;
++    }
++    std::istringstream istr;
++    istr.str( token );
++
++    istr >> libFileVersion;
++
++    if( istr.fail() )
++    {
++        ERROR << "invalid Library File Version in header\n";
++        cerr << "* Setting default version of 1\n";
++        libFileVersion = 1;
 +    }
 +
 +    if( quoted )
@@ -8480,15 +8503,19 @@
 +
 +    wxDateTime tdate( time( NULL ) );
 +
-+    lib << ".HEADER\n";
-+    lib << "LIBRARY_FILE 3.0 \"Created by KiCad " << TO_UTF8( GetBuildVersion() );
-+    lib << "\" " << setfill( '0' ) << setw(4) << tdate.GetYear();
-+    lib << "/" << setw(2) << tdate.GetMonth() << "/" << tdate.GetDay();
-+    lib << "." << tdate.GetHour() << ":" << tdate.GetMinute() << ":" << tdate.GetSecond();
-+    lib << " 1\n";
-+    lib << ".END_HEADER\n\n";
++    if( idfSource.empty() )
++        idfSource = "KiCad-IDF Framework";
 +
-+    lib << setw(1) << setfill( ' ' );
++    ostringstream fileDate;
++    fileDate << setfill( '0' ) << setw(4) << tdate.GetYear();
++    fileDate << "/" << setw(2) << tdate.GetMonth() << "/" << tdate.GetDay();
++    fileDate << "." << tdate.GetHour() << ":" << tdate.GetMinute() << ":" << tdate.GetSecond();
++    libDate = fileDate.str();
++
++    lib << ".HEADER\n";
++    lib << "LIBRARY_FILE 3.0 \"Created by " << idfSource;
++    lib << "\" " << libDate << " " << (++libFileVersion) << "\n";
++    lib << ".END_HEADER\n\n";
 +
 +    std::map< std::string, IDF3_COMP_OUTLINE*>::iterator its = compOutlines.begin();
 +    std::map< std::string, IDF3_COMP_OUTLINE*>::iterator ite = compOutlines.end();
@@ -8522,12 +8549,18 @@
 +
 +    wxDateTime tdate( time( NULL ) );
 +
++    if( idfSource.empty() )
++        idfSource = "KiCad-IDF Framework";
++
++    ostringstream fileDate;
++    fileDate << setfill( '0' ) << setw(4) << tdate.GetYear();
++    fileDate << "/" << setw(2) << tdate.GetMonth() << "/" << tdate.GetDay();
++    fileDate << "." << tdate.GetHour() << ":" << tdate.GetMinute() << ":" << tdate.GetSecond();
++    brdDate = fileDate.str();
++
 +    brd << ".HEADER\n";
-+    brd << "BOARD_FILE 3.0 \"Created by KiCad " << TO_UTF8( GetBuildVersion() );
-+    brd << "\" " << setfill( '0' ) << setw(4) << tdate.GetYear();
-+    brd << "/" << setw(2) << tdate.GetMonth() << "/" << tdate.GetDay();
-+    brd << "." << tdate.GetHour() << ":" << tdate.GetMinute() << ":" << tdate.GetSecond();
-+    brd << " 1\n";
++    brd << "BOARD_FILE 3.0 \"Created by " << idfSource;
++    brd << "\" " << brdDate << " " << (++brdFileVersion) << "\n";
 +
 +    if( boardName.empty() )
 +        brd << "\"BOARD WITH NO NAME\" ";
@@ -8778,6 +8811,71 @@
 +        cerr << "problems writing board file: '" << bfname << "'\n";
 +        return false;
 +    }
++
++    return true;
++}
++
++
++const std::string& IDF3_BOARD::GetIDFSource( void )
++{
++    return idfSource;
++}
++
++
++void  IDF3_BOARD::SetIDFSource( const std::string& aIDFSource )
++{
++    idfSource = aIDFSource;
++    return;
++}
++
++const std::string& IDF3_BOARD::GetBoardSource( void )
++{
++    return brdSource;
++}
++
++const std::string& IDF3_BOARD::GetLibrarySource( void )
++{
++    return libSource;
++}
++
++const std::string& IDF3_BOARD::GetBoardDate( void )
++{
++    return brdDate;
++}
++
++const std::string& IDF3_BOARD::GetLibraryDate( void )
++{
++    return libDate;
++}
++
++int   IDF3_BOARD::GetBoardVersion( void )
++{
++    return brdFileVersion;
++}
++
++bool  IDF3_BOARD::SetBoardVersion( int aVersion )
++{
++    if( aVersion < 0 )
++        return false;
++
++    brdFileVersion = aVersion;
++
++    return true;
++}
++
++
++int   IDF3_BOARD::GetLibraryVersion( void )
++{
++    return libFileVersion;
++}
++
++
++bool  IDF3_BOARD::SetLibraryVersion( int aVersion )
++{
++    if( aVersion < 0 )
++        return false;
++
++    libFileVersion = aVersion;
 +
 +    return true;
 +}
@@ -9349,6 +9447,17 @@
 +// clears all data
 +void IDF3_BOARD::Clear( void )
 +{
++    // preserve the board thickness
++    double thickness = olnBoard.GetThickness();
++
++    idfSource.clear();
++    brdSource.clear();
++    libSource.clear();
++    brdDate.clear();
++    libDate.clear();
++    brdFileVersion = 0;
++    libFileVersion = 0;
++
 +    // delete comment lists
 +    noteComments.clear();
 +    drillComments.clear();
@@ -9521,7 +9630,7 @@
 +    } while(0);
 +
 +    boardName.clear();
-+    boardThickness = 1.6;
++    olnBoard.SetThickness( thickness );
 +
 +    state     = FILE_START;
 +    unit      = UNIT_MM;
@@ -9534,8 +9643,8 @@
 
 === added file 'utils/idftools/idf_parser.h'
 --- utils/idftools/idf_parser.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.h	2014-05-16 05:00:05 +0000
-@@ -0,0 +1,355 @@
++++ utils/idftools/idf_parser.h	2014-05-17 01:04:28 +0000
+@@ -0,0 +1,374 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -9558,6 +9667,9 @@
 + * or you may write to the Free Software Foundation, Inc.,
 + * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
 + */
++
++// NOTE: XXX: aim to remove all dependencies on KiCad routines; this will
++// make the IDF framework usable in other unrelated projects.
 +
 +// NOTE:
 +// 1. Due to the complexity of objects and the risk of accumulated
@@ -9639,9 +9751,6 @@
 +    IDF3::IDF_LAYER     layer;          // [TOP/BOTTOM ONLY as per IDF spec]
 +    bool                hasPosition;    ///< True after SetPosition is called once
 +    std::string         refdes;         ///< Reference Description (MUST BE UNIQUE)
-+    // XXX: all "NOREFDES" must be internally
-+    // converted to "NOREFDES_[NUMBER]" on READ
-+    // and simply "NOREFDES" on WRITE.
 +    IDF3_BOARD*         parent;
 +
 +public:
@@ -9703,10 +9812,18 @@
 +    std::map< std::string, IDF3_COMPONENT*> components;         // drill and placement data for components
 +    std::map< std::string, IDF3_COMP_OUTLINE*> compOutlines;    // component outlines (data for library file)
 +    std::string boardName;
-+    double boardThickness; // XXX: deprecate; this is stored in the board outline
 +    IDF3::FILE_STATE state;
 +    IDF3::CAD_TYPE   cadType;
 +    IDF3::IDF_UNIT   unit;
++
++    std::string idfSource;  // SOURCE string to use when writing BOARD and LIBRARY headers
++    std::string brdSource;  // SOURCE string as retrieved from a BOARD file
++    std::string libSource;  // SOURCE string as retrieved from a LIBRARY file
++    std::string brdDate;    // DATE string from BOARD file
++    std::string libDate;    // DATE string from LIBRARY file
++    int brdFileVersion;     // File Version from BOARD file
++    int libFileVersion;     // File Version from LIBRARY file
++
 +    double userScale;       // user may store a scale for translating to arbitrary units
 +    double userXoff;        // user may specify an arbitrary X/Y offset
 +    double userYoff;
@@ -9789,6 +9906,17 @@
 +
 +    bool ReadFile( const wxString& aFullFileName );
 +    bool WriteFile( const wxString& aFullFileName, bool aUnitMM = true, bool aForceUnitFlag = false );
++
++    const std::string& GetIDFSource( void );
++    void  SetIDFSource( const std::string& aIDFSource);
++    const std::string& GetBoardSource( void );
++    const std::string& GetLibrarySource( void );
++    const std::string& GetBoardDate( void );
++    const std::string& GetLibraryDate( void );
++    int   GetBoardVersion( void );
++    bool  SetBoardVersion( int aVersion );
++    int   GetLibraryVersion( void );
++    bool  SetLibraryVersion( int aVersion );
 +
 +    double GetUserScale( void );
 +    bool SetUserScale( double aScaleFactor );
@@ -9964,7 +10092,7 @@
 
 === added file 'utils/idftools/test_idf2vrml.cpp'
 --- utils/idftools/test_idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/test_idf2vrml.cpp	2014-05-16 04:44:44 +0000
++++ utils/idftools/test_idf2vrml.cpp	2014-05-17 01:51:11 +0000
 @@ -0,0 +1,93 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
@@ -10048,7 +10176,7 @@
 +    }
 +
 +    cout << "** Writing file: " << OUTFILE << "\n";
-+    if( !pcb.WriteFile( FROM_UTF8( OUTFILE ), IDF3::UNIT_THOU, false ) )
++    if( !pcb.WriteFile( FROM_UTF8( OUTFILE ), IDF3::UNIT_THOU, true ) )
 +    {
 +        CLEANUP;
 +        cerr << "* Could not rewrite file\n";
