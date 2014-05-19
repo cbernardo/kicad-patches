@@ -227,8 +227,8 @@
 
 === added file 'utils/idftools/idf2vrml.cpp'
 --- utils/idftools/idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf2vrml.cpp	2014-05-19 08:12:18 +0000
-@@ -0,0 +1,626 @@
++++ utils/idftools/idf2vrml.cpp	2014-05-19 09:53:00 +0000
+@@ -0,0 +1,640 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -309,9 +309,15 @@
 +    COLOR_SECOND
 +};
 +
-+VRML_COLOR colors[2] = { \
-+    { 0, 0.82, 0.247, 0, 0, 0, 0, 0.82, 0.247, 0.9, 0, 0.4}, \
-+    { 1, 0, 0, 0, 0, 0, 1, 0, 0, 0.9, 0, 0.4} \
++#define NCOLORS 7
++VRML_COLOR colors[NCOLORS] = { \
++    { 0, 0.82, 0.247, 0, 0, 0, 0, 0.82, 0.247, 0.9, 0, 0.1}, \
++    { 1, 0, 0, 1, 0, 0, 1, 0, 0, 0.9, 0, 0.1}, \
++    { 0.659, 0, 0.463, 0, 0, 0, 0.659, 0, 0.463, 0.9, 0, 0.1}, \
++    { 0.659, 0.294, 0, 0, 0, 0, 0.659, 0.294, 0, 0.9, 0, 0.1}, \
++    { 0, 0.918, 0.659, 0, 0, 0, 0, 0.918, 0.659, 0.9, 0, 0.1}, \
++    { 0.808, 0.733 , 0.071, 0, 0, 0, 0.808, 0.733 , 0.071, 0.9, 0, 0.1}, \
++    { 0.102, 1, 0.984, 0, 0, 0, 0.102, 1, 0.984, 0.9, 0, 0.1}
 +};
 +
 +
@@ -325,6 +331,7 @@
 +                     bool top, double top_z, double bottom_z, int precision );
 +inline void TransformPoint( IDF_SEGMENT& seg, double frac, bool bottom,
 +                            double dX, double dY, double angle );
++VRML_COLOR* GetColor( std::map<std::string, int>& cmap, int& index, const std::string& uid );
 +
 +
 +int main( int argc, char **argv )
@@ -338,25 +345,9 @@
 +    //      0.1 = 1cm per VRML unit, 0.01 = 1m per VRML unit,
 +    //      1/25.4 = 1in per VRML unit, 1/2.54 = 0.1in per VRML unit (KiCad model)
 +    // 3. KiCad-friendly output (do not reuse features via DEF+USE)
-+
-+    // XXX -
-+    // 1. Read IDF file
-+    // 2. Tesselate the board
-+    // 3. Render each component to VRML; if the user wants
++    //      Render each component to VRML; if the user wants
 +    //      a KiCad friendly output then we must avoid DEF+USE;
 +    //      otherwise we employ DEF+USE to minimize file size
-+
-+    // XXX - Tricky bits:
-+    // 1. We need to define the coarseness of arcs:
-+    //      a. min. segment length for small arcs
-+    //      b. min. segment number for a full circle (6)
-+    //      c. min. segment length for large arcs
-+    //      d. max. segment number length for min. segment length;
-+    //          when NSEG > MAX_SEGMENTS calculated at min. segment
-+    //          length, we calculate NSEG based on (2)
-+    //      Ideally these numbers should be configurable, but at the
-+    //      start we can hard-code them. Using flags to alter them
-+    //      at a later stage should require little effort.
 +
 +    if( argc != 2 )
 +    {
@@ -843,7 +834,8 @@
 +                bot *= scale;
 +            }
 +
-+            WriteTriangles( file, &colors[1], &vpcb, false,
++            vcp = GetColor( cmap, cidx, ((IDF3_COMP_OUTLINE*)((*so)->GetOutline()))->GetUID() );
++            WriteTriangles( file, vcp, &vpcb, false,
 +                            false, top, bot, board.GetUserPrecision() );
 +
 +            vpcb.Clear();
@@ -854,6 +846,28 @@
 +    }
 +
 +    return true;
++}
++
++
++VRML_COLOR* GetColor( std::map<std::string, int>& cmap, int& index, const std::string& uid )
++{
++    if( index < 2 )
++        index = 2;   // 0 and 1 are special (BOARD, UID=NOGEOM_NOPART)
++
++    std::map<std::string, int>::iterator cit = cmap.find( uid );
++
++    if( cit == cmap.end() )
++    {
++        int idx = index;
++        cmap.insert( std::pair<std::string, int>(uid, index++) );
++
++        if( index >= NCOLORS )
++            index = 2;
++
++        return &colors[idx];
++    }
++
++    return &colors[cit->second];
 +}
 
 === added file 'utils/idftools/idf_common.cpp'
