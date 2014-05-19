@@ -109,7 +109,7 @@
 
 === added file 'utils/idftools/build.sh'
 --- utils/idftools/build.sh	1970-01-01 00:00:00 +0000
-+++ utils/idftools/build.sh	2014-05-19 00:37:29 +0000
++++ utils/idftools/build.sh	2014-05-19 08:11:39 +0000
 @@ -0,0 +1,99 @@
 +#! /bin/bash
 +#g++ -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp
@@ -120,7 +120,7 @@
 +# set these flags to (re)build each unit
 +IDF_HELPERS=false
 +IDF_OUTLINES=false
-+IDF_PARSER=true
++IDF_PARSER=false
 +IDF_COMMON=false
 +VRML_BOARD=false
 +MAIN=true
@@ -227,8 +227,8 @@
 
 === added file 'utils/idftools/idf2vrml.cpp'
 --- utils/idftools/idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf2vrml.cpp	2014-05-19 00:38:41 +0000
-@@ -0,0 +1,423 @@
++++ utils/idftools/idf2vrml.cpp	2014-05-19 08:12:18 +0000
+@@ -0,0 +1,626 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -282,6 +282,10 @@
 +#include <idf_parser.h>
 +#include <vrml_board.h>
 +
++#ifndef MIN_ANG
++#define MIN_ANG 0.01
++#endif
++
 +using namespace std;
 +
 +#define CLEANUP do { \
@@ -307,18 +311,20 @@
 +
 +VRML_COLOR colors[2] = { \
 +    { 0, 0.82, 0.247, 0, 0, 0, 0, 0.82, 0.247, 0.9, 0, 0.4}, \
-+    { 0, 0.82, 0.247, 0, 0, 0, 0, 0.82, 0.247, 0.9, 0, 0.4} \
++    { 1, 0, 0, 0, 0, 0, 1, 0, 0, 0.9, 0, 0.4} \
 +};
 +
 +
 +bool WriteHeader( IDF3_BOARD& board, std::ofstream& file );
 +bool MakeBoard( IDF3_BOARD& board, std::ofstream& file );
-+// XXX NOTE: replace 'bool bottom' with a transform in order to support KiCad-friendly output
-+bool PopulateVRML( VRML_LAYER& model, std::list< IDF_OUTLINE* >& items, bool bottom );
-+bool AddSegment( VRML_LAYER& model, IDF_SEGMENT* seg, int icont, int iseg, bool bottom );
-+
-+bool WriteTriangles( std::ofstream& file, VRML_COLOR& color, VRML_LAYER* layer, bool plane,
-+                     bool top, double top_z, double bottom_z );
++bool MakeComponents( IDF3_BOARD& board, std::ofstream& file );
++bool PopulateVRML( VRML_LAYER& model, std::list< IDF_OUTLINE* >& items, bool bottom,
++                   double scale, double dX = 0.0, double dY = 0.0, double angle = 0.0 );
++bool AddSegment( VRML_LAYER& model, IDF_SEGMENT* seg, int icont, int iseg );
++bool WriteTriangles( std::ofstream& file, VRML_COLOR* color, VRML_LAYER* layer, bool plane,
++                     bool top, double top_z, double bottom_z, int precision );
++inline void TransformPoint( IDF_SEGMENT& seg, double frac, bool bottom,
++                            double dX, double dY, double angle );
 +
 +
 +int main( int argc, char **argv )
@@ -375,7 +381,9 @@
 +        return -1;
 +    }
 +
-+    pcb.SetUserScale( 0.1 );    // XXX - 1cm = 1 VRML unit
++    // set the scale and output precision ( scale 1 == precision 5)
++    pcb.SetUserScale( 1 );
++    pcb.SetUserPrecision( 6 );
 +
 +    // Create the VRML file and write the header
 +    char* bnp = (char*) malloc( strlen( argv[1] ) + 1 );
@@ -393,10 +401,14 @@
 +    std::ofstream ofile;
 +    ofile.open( fname.c_str(), std::ios_base::out );
 +
++    ofile << fixed; // do not use exponents in VRML output
 +    WriteHeader( pcb, ofile );
 +
 +    // STEP 1: Render the PCB alone
 +    MakeBoard( pcb, ofile );
++
++    // STEP 2: Render the components
++    MakeComponents( pcb, ofile );
 +
 +    ofile << "]\n}\n";
 +    ofile.close();
@@ -450,7 +462,15 @@
 +        return false;
 +    }
 +
-+    if( !PopulateVRML( vpcb, board.GetBoardOutline()->GetOutlines(), false ) )
++    double scale = board.GetUserScale();
++
++    // set the arc parameters according to output scale
++    int tI;
++    double tMin, tMax;
++    vpcb.GetArcParams( tI, tMin, tMax );
++    vpcb.SetArcParams( tI, tMin * scale, tMax * scale );
++
++    if( !PopulateVRML( vpcb, board.GetBoardOutline()->GetOutlines(), false, board.GetUserScale() ) )
 +    {
 +        return false;
 +    }
@@ -470,7 +490,8 @@
 +
 +    while( sd != ed )
 +    {
-+        vpcb.AddCircle( (*sd)->GetDrillXPos(), (*sd)->GetDrillYPos(), (*sd)->GetDrillDia()/2.0, true );
++        vpcb.AddCircle( (*sd)->GetDrillXPos() * scale, (*sd)->GetDrillYPos() * scale,
++                        (*sd)->GetDrillDia() * scale / 2.0, true );
 +        ++sd;
 +    }
 +
@@ -486,7 +507,8 @@
 +
 +        while( sd != ed )
 +        {
-+            vpcb.AddCircle( (*sd)->GetDrillXPos(), (*sd)->GetDrillYPos(), (*sd)->GetDrillDia()/2.0, true );
++            vpcb.AddCircle( (*sd)->GetDrillXPos() * scale, (*sd)->GetDrillYPos() * scale,
++                            (*sd)->GetDrillDia() * scale / 2.0, true );
 +            ++sd;
 +        }
 +
@@ -496,15 +518,16 @@
 +    // tesselate and write out
 +    vpcb.Tesselate( NULL );
 +
-+    double thick = board.GetBoardThickness() / 2.0;
++    double thick = board.GetBoardThickness() / 2.0 * scale;
 +
-+    WriteTriangles( file, colors[0], &vpcb, false,
-+                         false, thick, -thick );
++    WriteTriangles( file, &colors[0], &vpcb, false,
++                         false, thick, -thick, board.GetUserPrecision() );
 +
 +    return true;
 +}
 +
-+bool PopulateVRML( VRML_LAYER& model, std::list< IDF_OUTLINE* >& items, bool bottom )
++bool PopulateVRML( VRML_LAYER& model, std::list< IDF_OUTLINE* >& items, bool bottom, double scale,
++                   double dX, double dY, double angle )
 +{
 +    // empty outlines are not unusual so we fail quietly
 +    if( items.size() < 1 )
@@ -517,6 +540,8 @@
 +    std::list< IDF_OUTLINE* >::iterator econt = items.end();
 +    std::list<IDF_SEGMENT*>::iterator sseg;
 +    std::list<IDF_SEGMENT*>::iterator eseg;
++
++    IDF_SEGMENT lseg;
 +
 +    while( scont != econt )
 +    {
@@ -541,7 +566,10 @@
 +        iseg = 0;
 +        while( sseg != eseg )
 +        {
-+            if( !AddSegment( model, *sseg, nvcont, iseg, bottom ) )
++            lseg = **sseg;
++            TransformPoint( lseg, scale, bottom, dX, dY, angle );
++
++            if( !AddSegment( model, &lseg, nvcont, iseg ) )
 +                return false;
 +
 +            ++iseg;
@@ -555,7 +583,7 @@
 +}
 +
 +
-+bool AddSegment( VRML_LAYER& model, IDF_SEGMENT* seg, int icont, int iseg, bool bottom )
++bool AddSegment( VRML_LAYER& model, IDF_SEGMENT* seg, int icont, int iseg )
 +{
 +    if( seg->angle != 0.0 )
 +    {
@@ -590,9 +618,12 @@
 +}
 +
 +
-+bool WriteTriangles( std::ofstream& file, VRML_COLOR& color, VRML_LAYER* layer, bool plane,
-+                     bool top, double top_z, double bottom_z )
++bool WriteTriangles( std::ofstream& file, VRML_COLOR* color, VRML_LAYER* layer, bool plane,
++                     bool top, double top_z, double bottom_z, int precision )
 +{
++    if( color == NULL || layer == NULL )
++        return false;
++
 +    file << "Transform {\n";
 +    file << "children [\n";
 +    file << "Group {\n";
@@ -602,15 +633,15 @@
 +    file << "material Material {\n";
 +
 +    // material definition
-+    file << "diffuseColor " << setprecision(3) << color.diff[0] << " ";
-+    file << color.diff[1] << " " << color.diff[2] << "\n";
-+    file << "specularColor " << color.spec[0] << " " << color.spec[1];
-+    file << " " << color.spec[2] << "\n";
-+    file << "emissiveColor " << color.emis[0] << " " << color.emis[1];
-+    file << " " << color.emis[2] << "\n";
-+    file << "ambientIntensity " << color.ambi << "\n";
-+    file << "transparency " << color.tran << "\n";
-+    file << "shininess " << color.shin << "\n";
++    file << "diffuseColor " << setprecision(3) << color->diff[0] << " ";
++    file << color->diff[1] << " " << color->diff[2] << "\n";
++    file << "specularColor " << color->spec[0] << " " << color->spec[1];
++    file << " " << color->spec[2] << "\n";
++    file << "emissiveColor " << color->emis[0] << " " << color->emis[1];
++    file << " " << color->emis[2] << "\n";
++    file << "ambientIntensity " << color->ambi << "\n";
++    file << "transparency " << color->tran << "\n";
++    file << "shininess " << color->shin << "\n";
 +
 +    file << "}\n";
 +    file << "}\n";
@@ -622,12 +653,11 @@
 +    // XXX: TODO: check return values of Write() routines; they may fail
 +    // even though the stream is good (bad internal data)
 +
-+    // XXX - set precision here (currently: 6)
 +    // Coordinates (vertices)
 +    if( plane )
-+        layer->WriteVertices( top_z, file, 6 );
++        layer->WriteVertices( top_z, file, precision );
 +    else
-+        layer->Write3DVertices( top_z, bottom_z, file, 6 );
++        layer->Write3DVertices( top_z, bottom_z, file, precision );
 +
 +    file << "\n";
 +
@@ -652,11 +682,184 @@
 +
 +    return !file.fail();
 +}
++
++inline void TransformPoint( IDF_SEGMENT& seg, double frac, bool bottom,
++                            double dX, double dY, double angle )
++{
++    dX *= frac;
++    dY *= frac;
++
++    if( bottom )
++    {
++        // mirror points on the Y axis
++        seg.startPoint.x = -seg.startPoint.x;
++        seg.endPoint.x = -seg.endPoint.x;
++        seg.center.x = -seg.center.x;
++        angle = -angle;
++    }
++
++    seg.startPoint.x *= frac;
++    seg.startPoint.y *= frac;
++    seg.endPoint.x *= frac;
++    seg.endPoint.y *= frac;
++    seg.center.x *= frac;
++    seg.center.y *= frac;
++
++    double tsin = 0.0;
++    double tcos = 0.0;
++
++    if( angle > MIN_ANG || angle < -MIN_ANG )
++    {
++        double ta = angle * M_PI / 180.0;
++        double tx, ty;
++
++        tsin = sin( ta );
++        tcos = cos( ta );
++
++        tx = seg.startPoint.x * tcos - seg.startPoint.y * tsin;
++        ty = seg.startPoint.x * tsin + seg.startPoint.y * tcos;
++        seg.startPoint.x = tx;
++        seg.startPoint.y = ty;
++
++        tx = seg.endPoint.x * tcos - seg.endPoint.y * tsin;
++        ty = seg.endPoint.x * tsin + seg.endPoint.y * tcos;
++        seg.endPoint.x = tx;
++        seg.endPoint.y = ty;
++
++        if( seg.angle != 0 )
++        {
++            tx = seg.center.x * tcos - seg.center.y * tsin;
++            ty = seg.center.x * tsin + seg.center.y * tcos;
++            seg.center.x = tx;
++            seg.center.y = ty;
++        }
++    }
++
++    seg.startPoint.x += dX;
++    seg.startPoint.y += dY;
++    seg.endPoint.x += dX;
++    seg.endPoint.y += dY;
++    seg.center.x += dX;
++    seg.center.y += dY;
++
++    if( seg.angle != 0 )
++    {
++        seg.radius *= frac;
++
++        if( bottom )
++        {
++            if( !seg.IsCircle() )
++            {
++                seg.angle = -seg.angle;
++                if( seg.offsetAngle > 0.0 )
++                    seg.offsetAngle = 180 - seg.offsetAngle;
++                else
++                    seg.offsetAngle = -seg.offsetAngle - 180;
++            }
++        }
++
++        if( angle > MIN_ANG || angle < -MIN_ANG )
++            seg.offsetAngle += angle;
++    }
++
++    return;
++}
++
++bool MakeComponents( IDF3_BOARD& board, std::ofstream& file )
++{
++    int cidx = 2;   // color index; start at 2 since 0,1 are special (board, NOGEOM_NOPART)
++
++    VRML_LAYER vpcb;
++
++    double scale = board.GetUserScale();
++    double thick = board.GetBoardThickness() / 2.0;
++
++    // set the arc parameters according to output scale
++    int tI;
++    double tMin, tMax;
++    vpcb.GetArcParams( tI, tMin, tMax );
++    vpcb.SetArcParams( tI, tMin * scale, tMax * scale );
++
++    // Add the component outlines
++    std::map< std::string, IDF3_COMPONENT* >* comp = &board.GetComponents();
++    std::map< std::string, IDF3_COMPONENT* >::iterator sc = comp->begin();
++    std::map< std::string, IDF3_COMPONENT* >::iterator ec = comp->end();
++
++    std::list< IDF3_COMP_OUTLINE_DATA* >* dp;
++    std::list< IDF3_COMP_OUTLINE_DATA* >::iterator so;
++    std::list< IDF3_COMP_OUTLINE_DATA* >::iterator eo;
++
++    double vX, vY, vA;
++    double tX, tY, tZ, tA;
++    double top, bot;
++    bool   bottom;
++    IDF3::IDF_LAYER lyr;
++
++    std::map< std::string, int > cmap;  // map colors by outline UID
++    VRML_COLOR* vcp;
++
++    while( sc != ec )
++    {
++        dp = &sc->second->GetOutlinesData();
++        sc->second->GetPosition( vX, vY, vA, lyr );
++
++        if( lyr == IDF3::LYR_BOTTOM )
++            bottom = true;
++        else
++            bottom = false;
++
++        so = dp->begin();
++        eo = dp->end();
++
++        while( so != eo )
++        {
++            (*so)->GetOffsets( tX, tY, tZ, tA );
++            tX += vX;
++            tY += vY;
++            tA += vA;
++
++            if( !PopulateVRML( vpcb, (*so)->GetOutline()->GetOutlines(), bottom,
++                board.GetUserScale(), tX, tY, tA ) )
++            {
++                return false;
++            }
++
++            vpcb.EnsureWinding( 0, false );
++
++            // tesselate and write out
++            vpcb.Tesselate( NULL );
++
++
++            if( bottom )
++            {
++                top = -thick - tZ;
++                bot = (top - (*so)->GetOutline()->GetThickness() ) * scale;
++                top *= scale;
++            }
++            else
++            {
++                bot = thick + tZ;
++                top = (bot + (*so)->GetOutline()->GetThickness() ) * scale;
++                bot *= scale;
++            }
++
++            WriteTriangles( file, &colors[1], &vpcb, false,
++                            false, top, bot, board.GetUserPrecision() );
++
++            vpcb.Clear();
++            ++so;
++        }
++
++        ++sc;
++    }
++
++    return true;
++}
 
 === added file 'utils/idftools/idf_common.cpp'
 --- utils/idftools/idf_common.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_common.cpp	2014-05-17 02:36:45 +0000
-@@ -0,0 +1,1333 @@
++++ utils/idftools/idf_common.cpp	2014-05-19 08:08:14 +0000
+@@ -0,0 +1,1334 @@
 +/**
 + * file: idf_common.cpp
 + *
@@ -1703,8 +1906,9 @@
 +            offsetAngle = 0.0;
 +            radius = aStartPoint.CalcDistance( aEndPoint );
 +        }
-+        else if( aAngle < MIN_ANG && aAngle > -MIN_ANG )
++        else if( aAngle > MIN_ANG || aAngle < -MIN_ANG )
 +        {
++            angle = aAngle;
 +            CalcCenterAndRadius();
 +        }
 +
@@ -1752,7 +1956,7 @@
 +    double xm   = ( startPoint.x + endPoint.x ) * 0.5;
 +    double ym   = ( startPoint.y + endPoint.y ) * 0.5;
 +
-+    radius = d / sin( angle * M_PI / 180.0 );
++    radius = d / sin( angle * M_PI / 360.0 );
 +
 +    if( radius < 0.0 )
 +    {
@@ -1775,7 +1979,7 @@
 +    else
 +        offAng -= M_PI2;
 +
-+    if( ( angle > M_PI ) || ( angle < -M_PI ) )
++    if( ( angle > 180.0 ) || ( angle < -180.0 ) )
 +        offAng += M_PI;
 +
 +    center.x = h * cos( offAng ) + xm;
@@ -6174,8 +6378,8 @@
 
 === added file 'utils/idftools/idf_parser.cpp'
 --- utils/idftools/idf_parser.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.cpp	2014-05-19 00:37:07 +0000
-@@ -0,0 +1,3815 @@
++++ utils/idftools/idf_parser.cpp	2014-05-19 02:38:56 +0000
+@@ -0,0 +1,3830 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -7195,6 +7399,7 @@
 +{
 +    state          = FILE_START;
 +    cadType        = aCadType;
++    userPrec       = 5;
 +    userScale      = 1.0;
 +    userXoff       = 0.0;
 +    userYoff       = 0.0;
@@ -9250,6 +9455,20 @@
 +    return true;
 +}
 +
++int IDF3_BOARD::GetUserPrecision( void )
++{
++    return userPrec;
++}
++
++bool IDF3_BOARD::SetUserPrecision( int aPrecision )
++{
++    if( aPrecision < 0 || aPrecision > 8 )
++        return false;
++
++    userPrec = aPrecision;
++    return true;
++}
++
 +
 +void IDF3_BOARD::GetUserOffset( double& aXoff, double& aYoff )
 +{
@@ -9994,8 +10213,8 @@
 
 === added file 'utils/idftools/idf_parser.h'
 --- utils/idftools/idf_parser.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.h	2014-05-18 22:57:41 +0000
-@@ -0,0 +1,379 @@
++++ utils/idftools/idf_parser.h	2014-05-19 03:39:47 +0000
+@@ -0,0 +1,387 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -10079,6 +10298,10 @@
 +
 +    void SetParent( IDF3_COMPONENT* aParent );
 +    void SetOutline( IDF3_COMP_OUTLINE* aOutline );
++    IDF3_COMP_OUTLINE* GetOutline( void )
++    {
++        return outline;
++    }
 +
 +    bool ReadPlaceData( std::ifstream &aBoardFile, IDF3::FILE_STATE& aBoardState,
 +                        IDF3_BOARD *aBoard );
@@ -10175,6 +10398,7 @@
 +    int brdFileVersion;     // File Version from BOARD file
 +    int libFileVersion;     // File Version from LIBRARY file
 +
++    int    userPrec;        // user may store any integer here
 +    double userScale;       // user may store a scale for translating to arbitrary units
 +    double userXoff;        // user may specify an arbitrary X/Y offset
 +    double userYoff;
@@ -10271,6 +10495,9 @@
 +
 +    double GetUserScale( void );
 +    bool SetUserScale( double aScaleFactor );
++
++    int GetUserPrecision( void );
++    bool SetUserPrecision( int aPrecision );
 +
 +    void GetUserOffset( double& aXoff, double& aYoff );
 +    void SetUserOffset( double aXoff, double aYoff );
@@ -10545,8 +10772,8 @@
 
 === added file 'utils/idftools/vrml_board.cpp'
 --- utils/idftools/vrml_board.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/vrml_board.cpp	2014-05-18 07:09:43 +0000
-@@ -0,0 +1,1598 @@
++++ utils/idftools/vrml_board.cpp	2014-05-19 06:53:12 +0000
+@@ -0,0 +1,1631 @@
 +/*
 + * file: vrml_board.cpp
 + *
@@ -10582,7 +10809,6 @@
 + *  m:    1 micron
 + *
 + */
-+
 +
 +#include <sstream>
 +#include <string>
@@ -10749,6 +10975,28 @@
 +}
 +
 +
++void VRML_LAYER::GetArcParams( int& aMaxSeg, double& aMinLength, double& aMaxLength )
++{
++    aMaxSeg = maxArcSeg;
++    aMinLength = minSegLength;
++    aMaxLength = maxSegLength;
++}
++
++bool VRML_LAYER::SetArcParams( int aMaxSeg, double aMinLength, double aMaxLength )
++{
++    if( aMaxSeg < 8 )
++        aMaxSeg = 8;
++
++    if( aMinLength <= 0 || aMaxLength <= aMinLength )
++        return false;
++
++    maxArcSeg = aMaxSeg;
++    minSegLength = aMinLength;
++    maxSegLength = aMaxLength;
++    return true;
++}
++
++
 +// clear all data
 +void VRML_LAYER::Clear( void )
 +{
@@ -10871,19 +11119,6 @@
 +        return false;
 +    }
 +
-+    // add the vertex only if it does not exist; this allows us to push a loop
-+    // in which the first and last points are identical
-+    if( contours[aContour]->size() > 0 )
-+    {
-+        double tx = vertices[ contours[aContour]->front() ]->x - x;
-+        double ty = vertices[ contours[aContour]->front() ]->y - y;
-+
-+        double dist = tx*tx + ty*ty;
-+
-+        if( dist < 1e-12 )
-+            return true;
-+    }
-+
 +    VERTEX_3D* vertex = new VERTEX_3D;
 +
 +    if( !vertex )
@@ -10984,13 +11219,21 @@
 +
 +    if( hole )
 +    {
-+        for( double angle = 0; angle < M_PI * 2; angle += da )
++        fail |= !AddVertex( contour, x + rad, y );
++
++        for( double angle = da; angle < M_PI * 2; angle += da )
 +            fail |= !AddVertex( contour, x + rad * cos( angle ), y - rad * sin( angle ) );
++
++        fail |= !AddVertex( contour, x + rad, y );
 +    }
 +    else
 +    {
-+        for( double angle = 0; angle < M_PI * 2; angle += da )
++        fail |= !AddVertex( contour, x + rad, y );
++
++        for( double angle = da; angle < M_PI * 2; angle += da )
 +            fail |= !AddVertex( contour, x + rad * cos( angle ), y + rad * sin( angle ) );
++
++        fail |= !AddVertex( contour, x + rad, y );
 +    }
 +
 +    return !fail;
@@ -11118,7 +11361,10 @@
 +    if( nsides < MIN_NSIDES )
 +        nsides = MIN_NSIDES;
 +
-+    nsides = ( ( (double) nsides ) * angle / 180.0 );
++    if( angle > 0 )
++        nsides = ( ( (double) nsides ) * angle / 180.0 );
++    else
++        nsides = -( ( (double) nsides ) * angle / 180.0 );
 +
 +    angle = angle / 180.0 * M_PI;
 +    startAngle = startAngle / 180.0 * M_PI;
@@ -11130,8 +11376,20 @@
 +
 +    bool fail = false;
 +
-+    for( double angle = 0; angle < M_PI * 2; angle += da )
-+        fail |= !AddVertex( contour, x + rad * cos( angle + startAngle ), y + rad * sin( angle + startAngle ) );
++    if( angle > 0 )
++    {
++        angle += startAngle;
++        for( double ang = startAngle; ang < angle; ang += da )
++            fail |= !AddVertex( contour, x + rad * cos( ang ), y + rad * sin( ang ) );
++    }
++    else
++    {
++        angle += startAngle;
++        for( double ang = startAngle; ang > angle; ang += da )
++            fail |= !AddVertex( contour, x + rad * cos( ang ), y + rad * sin( ang ) );
++    }
++
++    fail |= !AddVertex( contour, x + rad * cos( angle ), y + rad * sin( angle ) );
 +
 +    return !fail;
 +}
@@ -11579,7 +11837,7 @@
 +    for( i = 1, j = ordmap.size(); i < j; ++i )
 +    {
 +        vp = getVertexByIndex( ordmap[i], pholes );
-+        FormatDoublet( vp->x, vp->y, 6, strx, stry );
++        FormatDoublet( vp->x, vp->y, precision, strx, stry );
 +
 +        if( endl )
 +        {
@@ -11753,6 +12011,8 @@
 +
 +        if( (i++ & 3) == 2 )
 +        {
++            out << ",\n" << firstPoint << ", " << lastPoint << ", " << firstPoint + idx2;
++            out << ", -1, " << firstPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
 +        }
 +        else
 +        {
@@ -12148,8 +12408,8 @@
 
 === added file 'utils/idftools/vrml_board.h'
 --- utils/idftools/vrml_board.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/vrml_board.h	2014-05-18 07:11:06 +0000
-@@ -0,0 +1,417 @@
++++ utils/idftools/vrml_board.h	2014-05-19 02:49:15 +0000
+@@ -0,0 +1,420 @@
 +/*
 + * file: vrml_board.h
 + *
@@ -12291,6 +12551,9 @@
 +
 +    VRML_LAYER();
 +    virtual ~VRML_LAYER();
++
++    void GetArcParams( int& aMaxSeg, double& aMinLength, double& aMaxLength );
++    bool SetArcParams( int aMaxSeg, double aMinLength, double aMaxLength );
 +
 +    /**
 +     * Function Clear
