@@ -109,7 +109,7 @@
 
 === added file 'utils/idftools/build.sh'
 --- utils/idftools/build.sh	1970-01-01 00:00:00 +0000
-+++ utils/idftools/build.sh	2014-05-19 21:28:22 +0000
++++ utils/idftools/build.sh	2014-05-21 23:14:47 +0000
 @@ -0,0 +1,99 @@
 +#! /bin/bash
 +#g++ -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp
@@ -119,7 +119,7 @@
 +
 +# set these flags to (re)build each unit
 +IDF_HELPERS=false
-+IDF_OUTLINES=false
++IDF_OUTLINES=true
 +IDF_PARSER=false
 +IDF_COMMON=false
 +VRML_BOARD=false
@@ -227,8 +227,8 @@
 
 === added file 'utils/idftools/idf2vrml.cpp'
 --- utils/idftools/idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf2vrml.cpp	2014-05-20 04:46:33 +0000
-@@ -0,0 +1,822 @@
++++ utils/idftools/idf2vrml.cpp	2014-05-22 00:51:22 +0000
+@@ -0,0 +1,835 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -338,7 +338,6 @@
 +    { 0.808, 0.733 , 0.071, 0, 0, 0, 0.808, 0.733 , 0.071, 0.9, 0, 0.1}, \
 +    { 0.102, 1, 0.984, 0, 0, 0, 0.102, 1, 0.984, 0.9, 0, 0.1}
 +};
-+
 +
 +bool WriteHeader( IDF3_BOARD& board, std::ofstream& file );
 +bool MakeBoard( IDF3_BOARD& board, std::ofstream& file );
@@ -721,6 +720,19 @@
 +
 +            double tsin, tcos, tx, ty;
 +
++            // beware of  -90.001 < angle < 89.999 and 269.999 < angle < 270.001
++            double diff = vID->dA + M_PI2;
++
++            if( diff < 1.7e-5 && diff > -1.7e-5 )
++                vID->dA += 3.4e-5;
++
++            diff = vID->dA - ( M_PI2 + M_PI );
++
++            if( diff < 1.7e-5 && diff > -1.7e-5 )
++                vID->dA += 3.4e-5;
++
++            // calculate the rotation axis and angle
++
 +            tcos = cos( vID->dA );
 +            tsin = sin( vID->dA );
 +
@@ -976,10 +988,11 @@
 +                vcp->dA = tA * M_PI / 180.0;
 +            }
 +
-+            vpcb.EnsureWinding( 0, false );
-+
-+            // tesselate and write out
-+            vpcb.Tesselate( NULL );
++            if( !compact || !vcp->used )
++            {
++                vpcb.EnsureWinding( 0, false );
++                vpcb.Tesselate( NULL );
++            }
 +
 +            if( !compact )
 +            {
@@ -3667,8 +3680,8 @@
 
 === added file 'utils/idftools/idf_outlines.cpp'
 --- utils/idftools/idf_outlines.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_outlines.cpp	2014-05-16 07:17:35 +0000
-@@ -0,0 +1,2601 @@
++++ utils/idftools/idf_outlines.cpp	2014-05-21 23:16:26 +0000
+@@ -0,0 +1,2607 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -3790,14 +3803,20 @@
 +                {
 +                    if( !outlines.front()->IsCCW() )
 +                    {
-+                        ERROR << "first outline is not in CCW order\n";
-+                        return false;
++                        ERROR << "invalid IDF3 file (BOARD_OUTLINE)\n";
++                        cerr << "* first outline is not in CCW order\n";
++#warning TO BE IMPLEMENTED
++                        // outlines.front()->EnsureWinding( false );
++                        return true;
 +                    }
 +
 +                    if( outlines.size() > 1 && outlines.back()->IsCCW() && !outlines.back()->IsCircle() )
 +                    {
-+                        ERROR << "cutout points are not in CW order\n";
-+                        return false;
++                        ERROR << "invalid IDF3 file (BOARD_OUTLINE)\n";
++                        cerr << "* cutout points are not in CW order\n";
++#warning TO BE IMPLEMENTED
++                        // outlines.front()->EnsureWinding( true );
++                        return true;
 +                    }
 +                }
 +            }
@@ -6574,8 +6593,8 @@
 
 === added file 'utils/idftools/idf_parser.cpp'
 --- utils/idftools/idf_parser.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.cpp	2014-05-19 02:38:56 +0000
-@@ -0,0 +1,3830 @@
++++ utils/idftools/idf_parser.cpp	2014-05-20 08:28:31 +0000
+@@ -0,0 +1,3819 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -6612,17 +6631,6 @@
 +
 +using namespace std;
 +using namespace IDF3;
-+
-+static bool CompareComponent( IDF3_COMPONENT* p1, IDF3_COMPONENT* p2 )
-+{
-+    return p1->GetRefDes().compare( p2->GetRefDes() ) < 0 ? true : false;
-+}
-+
-+static bool CompareCompOutline( IDF3_COMP_OUTLINE* p1, IDF3_COMP_OUTLINE* p2 )
-+{
-+    return p1->GetUID().compare( p2->GetUID() ) < 0 ? true : false;
-+}
-+
 +
 +/*
 + * CLASS: IDF3_COMP_OUTLINE_DATA
@@ -6748,7 +6756,7 @@
 +    // RECORD 2: 'package name', 'part number', 'Refdes' (any, NOREFDES, BOARD)
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && !aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading PLACEMENT SECTION\n";
@@ -7634,7 +7642,7 @@
 +    return boardName;
 +}
 +
-+bool IDF3_BOARD::SetUnit( IDF3::IDF_UNIT aUnit, bool convert )
++bool IDF3_BOARD::setUnit( IDF3::IDF_UNIT aUnit, bool convert )
 +{
 +    switch( aUnit )
 +    {
@@ -7789,7 +7797,7 @@
 +
 +
 +// read the DRILLED HOLES section
-+bool IDF3_BOARD::ReadBrdDrills( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
++bool IDF3_BOARD::readBrdDrills( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
 +{
 +    IDF_DRILL_DATA drill;
 +
@@ -7823,7 +7831,7 @@
 +
 +
 +// read the NOTES section
-+bool IDF3_BOARD::ReadBrdNotes( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
++bool IDF3_BOARD::readBrdNotes( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
 +{
 +    IDF_NOTE note;
 +
@@ -7842,7 +7850,7 @@
 +
 +
 +// read the component placement section
-+bool IDF3_BOARD::ReadBrdPlacement( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
++bool IDF3_BOARD::readBrdPlacement( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
 +{
 +    IDF3_COMP_OUTLINE_DATA oldata;
 +
@@ -7859,7 +7867,7 @@
 +
 +
 +// read the board HEADER
-+bool IDF3_BOARD::ReadBrdHeader( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
++bool IDF3_BOARD::readBrdHeader( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
 +{
 +    std::string iline;      // the input line
 +    bool isComment;         // true if a line just read in is a comment line
@@ -8098,7 +8106,7 @@
 +    //      .END_HEADER
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && !aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading board header, RECORD 4\n";
@@ -8130,7 +8138,7 @@
 +
 +
 +// read individual board sections; pay attention to IDFv3 section specifications
-+bool IDF3_BOARD::ReadBrdSection( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
++bool IDF3_BOARD::readBrdSection( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState )
 +{
 +    std::list< std::string > comments;  // comments associated with a section
 +
@@ -8600,7 +8608,7 @@
 +                return false;
 +            }
 +
-+            if( !ReadBrdDrills( aBoardFile, aBoardState ) )
++            if( !readBrdDrills( aBoardFile, aBoardState ) )
 +            {
 +                if( !aBoardFile.good() || aBoardState == IDF3::FILE_INVALID )
 +                {
@@ -8635,7 +8643,7 @@
 +                return false;
 +            }
 +
-+            if( !ReadBrdNotes( aBoardFile, aBoardState ) )
++            if( !readBrdNotes( aBoardFile, aBoardState ) )
 +            {
 +                if( !aBoardFile.good() || aBoardState == IDF3::FILE_INVALID )
 +                {
@@ -8670,7 +8678,7 @@
 +                return false;
 +            }
 +
-+            if( !ReadBrdPlacement( aBoardFile, aBoardState ) )
++            if( !readBrdPlacement( aBoardFile, aBoardState ) )
 +            {
 +                if( !aBoardFile.good() || aBoardState == IDF3::FILE_INVALID )
 +                {
@@ -8707,11 +8715,11 @@
 +    }
 +
 +    return true;
-+}   // ReadBrdSection()
++}   // readBrdSection()
 +
 +
 +// read the board file data
-+bool IDF3_BOARD::ReadBoardFile( const std::string& aFileName )
++bool IDF3_BOARD::readBoardFile( const std::string& aFileName )
 +{
 +    std::ifstream brd;
 +
@@ -8740,7 +8748,7 @@
 +    // for unambiguous association is at the end of the file, which is inconvenient
 +    // for large files.
 +
-+    if( !ReadBrdHeader( brd, state ) )
++    if( !readBrdHeader( brd, state ) )
 +    {
 +        ERROR;
 +        cerr << "could not find a valid header\n";
@@ -8749,7 +8757,7 @@
 +    }
 +
 +    // read the various sections
-+    while( ReadBrdSection( brd, state ) && state != IDF3::FILE_PLACEMENT && !brd.eof() );
++    while( readBrdSection( brd, state ) && state != IDF3::FILE_PLACEMENT && !brd.eof() );
 +
 +    if( state == IDF3::FILE_INVALID )
 +    {
@@ -8783,7 +8791,7 @@
 +            while( !FetchIDFLine( brd, iline, isComment, pos ) && brd.good() );
 +
 +            // normally this is a fault but we have all the data in accordance with specs
-+            if( !brd.good() && !brd.eof() || iline.empty() )
++            if( ( !brd.good() && !brd.eof() ) || iline.empty() )
 +                break;
 +
 +            if( isComment )
@@ -8803,11 +8811,11 @@
 +
 +    brd.close();
 +    return true;
-+} // ReadBoardFile()
++} // readBoardFile()
 +
 +
 +// read the library sections (outlines)
-+bool IDF3_BOARD::ReadLibSection( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState, IDF3_BOARD* aBoard )
++bool IDF3_BOARD::readLibSection( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState, IDF3_BOARD* aBoard )
 +{
 +    if( aBoard == NULL )
 +    {
@@ -8923,7 +8931,7 @@
 +
 +
 +// read the library HEADER
-+bool IDF3_BOARD::ReadLibHeader( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState )
++bool IDF3_BOARD::readLibHeader( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState )
 +{
 +    std::string iline;      // the input line
 +    bool isComment;         // true if a line just read in is a comment line
@@ -9088,7 +9096,7 @@
 +    //      .END_HEADER
 +    while( !FetchIDFLine( aLibFile, iline, isComment, pos ) && aLibFile.good() );
 +
-+    if( !aLibFile.good() && !aLibFile.eof() || iline.empty() )
++    if( ( !aLibFile.good() && !aLibFile.eof() ) || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading library header, RECORD 3\n";
@@ -9120,7 +9128,7 @@
 +
 +
 +// read the library file data
-+bool IDF3_BOARD::ReadLibFile( const std::string& aFileName )
++bool IDF3_BOARD::readLibFile( const std::string& aFileName )
 +{
 +    std::ifstream lib;
 +
@@ -9135,7 +9143,7 @@
 +
 +    IDF3::FILE_STATE state = IDF3::FILE_START;
 +
-+    if( !ReadLibHeader( lib, state ) )
++    if( !readLibHeader( lib, state ) )
 +    {
 +        ERROR;
 +        cerr << "[IDF library] could not find a valid header\n";
@@ -9144,7 +9152,7 @@
 +    }
 +
 +    // read the library sections
-+    while( ReadLibSection( lib, state, this ) && lib.good() );
++    while( readLibSection( lib, state, this ) && lib.good() );
 +
 +    if( state <= IDF3::FILE_START || state >= IDF3::FILE_INVALID )
 +    {
@@ -9219,7 +9227,7 @@
 +    else
 +    {
 +        // read the library file before proceeding
-+        if( !ReadLibFile( lfname ) )
++        if( !readLibFile( lfname ) )
 +        {
 +            ERROR;
 +            cerr << "problems reading library file: '" << lfname << "'\n";
@@ -9228,7 +9236,7 @@
 +    }
 +
 +    // read the board file
-+    if( !ReadBoardFile( bfname ) )
++    if( !readBoardFile( bfname ) )
 +    {
 +        Clear();
 +        ERROR;
@@ -9240,7 +9248,7 @@
 +}
 +
 +// write the library file data
-+bool IDF3_BOARD::WriteLibFile( const std::string& aFileName )
++bool IDF3_BOARD::writeLibFile( const std::string& aFileName )
 +{
 +    std::ofstream lib;
 +
@@ -9286,7 +9294,7 @@
 +}
 +
 +// write the board file data
-+bool IDF3_BOARD::WriteBoardFile( const std::string& aFileName )
++bool IDF3_BOARD::writeBoardFile( const std::string& aFileName )
 +{
 +    std::ofstream brd;
 +
@@ -9503,9 +9511,9 @@
 +bool IDF3_BOARD::WriteFile( const wxString& aFullFileName, bool aUnitMM, bool aForceUnitFlag )
 +{
 +    if( aUnitMM == IDF3::UNIT_MM )
-+        SetUnit( IDF3::UNIT_MM, aForceUnitFlag );
++        setUnit( IDF3::UNIT_MM, aForceUnitFlag );
 +    else
-+        SetUnit( IDF3::UNIT_THOU, aForceUnitFlag );
++        setUnit( IDF3::UNIT_THOU, aForceUnitFlag );
 +
 +    // 1. Check that the file extension is 'emn'
 +    // 2. Write the *.emn file according to the IDFv3 spec
@@ -9550,14 +9558,14 @@
 +        return false;
 +    }
 +
-+    if( !WriteLibFile( lfname ) )
++    if( !writeLibFile( lfname ) )
 +    {
 +        ERROR;
 +        cerr << "problems writing library file: '" << lfname << "'\n";
 +        return false;
 +    }
 +
-+    if( !WriteBoardFile( bfname ) )
++    if( !writeBoardFile( bfname ) )
 +    {
 +        ERROR;
 +        cerr << "problems writing board file: '" << bfname << "'\n";
@@ -9750,7 +9758,7 @@
 +        return aDrilledHole;
 +    }
 +
-+    return AddCompDrill( aDrilledHole );
++    return addCompDrill( aDrilledHole );
 +}
 +
 +
@@ -9851,7 +9859,7 @@
 +}
 +
 +
-+IDF_DRILL_DATA* IDF3_BOARD::AddCompDrill( double aDia, double aXpos, double aYpos,
++IDF_DRILL_DATA* IDF3_BOARD::addCompDrill( double aDia, double aXpos, double aYpos,
 +                                  IDF3::KEY_PLATING aPlating,
 +                                  const std::string aHoleType,
 +                                  IDF3::KEY_OWNER aOwner,
@@ -9908,7 +9916,7 @@
 +}
 +
 +
-+IDF_DRILL_DATA* IDF3_BOARD::AddCompDrill( IDF_DRILL_DATA* aDrilledHole )
++IDF_DRILL_DATA* IDF3_BOARD::addCompDrill( IDF_DRILL_DATA* aDrilledHole )
 +{
 +    if( !aDrilledHole )
 +        return NULL;
@@ -9944,7 +9952,7 @@
 +}
 +
 +
-+bool IDF3_BOARD::DelCompDrill( double aDia, double aXpos, double aYpos, std::string aRefDes )
++bool IDF3_BOARD::delCompDrill( double aDia, double aXpos, double aYpos, std::string aRefDes )
 +{
 +    std::map<std::string, IDF3_COMPONENT*>::iterator ref = components.find( aRefDes );
 +
@@ -10409,8 +10417,8 @@
 
 === added file 'utils/idftools/idf_parser.h'
 --- utils/idftools/idf_parser.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.h	2014-05-19 03:39:47 +0000
-@@ -0,0 +1,387 @@
++++ utils/idftools/idf_parser.h	2014-05-20 08:26:40 +0000
+@@ -0,0 +1,483 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -10473,35 +10481,122 @@
 +    double yoff;    // Y offset from KiCad or Y placement from IDF file
 +    double zoff;    // height offset (specified in IDFv3 spec, corresponds to KiCad Z offset)
 +    double aoff;    // angular offset from KiCad or Rotation Angle from IDF file
-+    // NOTE: For the KiCad representation to be equivalent to the IDF representation,
-+    // the very first model listed must have KiCad X,Y and angular offsets of 0 since the
-+    // first model listed will determine the XY/Angle position of an IDF3_COMPONENT and all
-+    // other components are relative to that. Ideally *ALL* models will have XY/Angle offsets
-+    // of 0; if not, there is always a danger that the order of models will be shuffled
-+    // and the component would effectively change its location.
++
 +    IDF3_COMP_OUTLINE* outline; // component outline to use
 +    IDF3_COMPONENT* parent;     // associated component
 +
 +public:
++    /**
++     * Constructor
++     * creates an object with default settings and no parent or associated outline
++     */
 +    IDF3_COMP_OUTLINE_DATA();
++
++    /**
++     * Constructor
++     * creates an object with default settings and the specified parent and associated outline
++     *
++     * @param aParent is the owning IDF3_COMPONENT object
++     * @param aOutline is the outline for this placed component
++     */
 +    IDF3_COMP_OUTLINE_DATA( IDF3_COMPONENT* aParent, IDF3_COMP_OUTLINE* aOutline );
++
++    /**
++     * Constructor
++     * creates an object the specified parent and associated outline and the specified
++     * data.
++     *
++     * @param aParent is the owning IDF3_COMPONENT object
++     * @param aOutline is the outline for this placed component
++     * @param aXoff is the X offset of this outline in relation to its parent
++     * @param aYoff is the Y offset of this outline in relation to its parent
++     * @param aZoff is the board offset of this outline as per IDFv3 specification
++     * @param aAoff is the rotational offset of this outline in relation to its parent
++     */
 +    IDF3_COMP_OUTLINE_DATA( IDF3_COMPONENT* aParent, IDF3_COMP_OUTLINE* aOutline,
 +                            double aXoff, double aYoff, double aZoff, double aAoff );
++
 +    ~IDF3_COMP_OUTLINE_DATA();
 +
++    /**
++     * Function SetOffsets
++     * sets the position and orientation of this outline item in relation to its parent
++     *
++     * @param aXoff is the X offset of this outline in relation to its parent
++     * @param aYoff is the Y offset of this outline in relation to its parent
++     * @param aZoff is the board offset of this outline as per IDFv3 specification
++     * @param aAoff is the rotational offset of this outline in relation to its parent
++     */
 +    void SetOffsets( double aXoff, double aYoff, double aZoff, double aAngleOff );
++
++    /**
++     * Function GetOffsets
++     * retrieves the position and orientation of this outline item in relation to its parent
++     *
++     * @param aXoff is the X offset of this outline in relation to its parent
++     * @param aYoff is the Y offset of this outline in relation to its parent
++     * @param aZoff is the board offset of this outline as per IDFv3 specification
++     * @param aAoff is the rotational offset of this outline in relation to its parent
++     */
 +    void GetOffsets( double& aXoff, double& aYoff, double& aZoff, double& aAngleOff );
 +
++    /**
++     * Function SetParent
++     * sets the parent object
++     *
++     * @param aParent is the owning IDF3_COMPONENT object
++     */
 +    void SetParent( IDF3_COMPONENT* aParent );
++
++    /**
++     * Function SetOutline
++     * sets the outline whose position is managed by this object
++     *
++     * @param aOutline is the outline for this component
++     */
 +    void SetOutline( IDF3_COMP_OUTLINE* aOutline );
++
++    /**
++     * Function GetOutline
++     * retrieves the outline whose position is managed by this object
++     *
++     * @return IDF3_COMP_OUTLINE*: the outline for this component
++     */
 +    IDF3_COMP_OUTLINE* GetOutline( void )
 +    {
 +        return outline;
 +    }
 +
++    /**
++     * Function ReadPlaceData
++     * reads placement data from an open IDFv3 file
++     *
++     * @param aBoardFile is the open IDFv3 file
++     * @param aBoardState is the internal status flag of the IDF parser
++     * @param aBoard is the IDF3_BOARD object which will store the data
++     *
++     * @return bool: true if placement data was successfully read. false if
++     * no placement data was read; this may happen if the end of the placement
++     * data was encountered or an error occurred. if an error occurred then
++     * aBoardState is set to IDF3::FILE_INVALID or IDF3::FILE_ERROR.
++     */
 +    bool ReadPlaceData( std::ifstream &aBoardFile, IDF3::FILE_STATE& aBoardState,
 +                        IDF3_BOARD *aBoard );
 +
++    /**
++     * Function WritePlaceData
++     * writes RECORD 2 and RECORD 3 of a PLACEMENT section as per IDFv3 specification
++     *
++     * @param aBoardFile is the open IDFv3 file
++     * @param aXpos is the X location of the parent component
++     * @param aYpos is the Y location of the parent component
++     * @param aAngle is the rotation of the parent component
++     * @param aRefDes is the reference designator of the parent component
++     * @param aPlacement is the IDF Placement Status of the parent component
++     * @param aSide is the IDF Layer Designator (TOP or BOTTOM)
++     *
++     * @return bool: true if data was successfully written, otherwise false
++     */
 +    bool WritePlaceData( std::ofstream& aBoardFile, double aXpos, double aYpos, double aAngle,
 +                         const std::string aRefDes, IDF3::IDF_PLACEMENT aPlacement,
 +                         IDF3::IDF_LAYER aSide );
@@ -10524,19 +10619,66 @@
 +    IDF3_BOARD*         parent;
 +
 +public:
++    /**
++     * Constructor
++     * sets internal parameters to default values
++     */
 +    IDF3_COMPONENT();
++
++    /**
++     * Constructor
++     * sets the parent object and initializes other internal parameters to default values
++     *
++     * @param aParent is the owning IDF3_BOARD object
++     */
 +    IDF3_COMPONENT( IDF3_BOARD* aParent );
++
 +    ~IDF3_COMPONENT();
 +
++    /**
++     * Function SetParent
++     * sets the parent object
++     *
++     * @param aParent is the owning IDF3_BOARD object
++     */
 +    void SetParent( IDF3_BOARD* aParent );
 +
++    /**
++     * Function GetCadType
++     * returns the type of CAD (IDF3::CAD_ELEC, IDF3::CAD_MECH) which instantiated this object
++     *
++     * @return IDF3::CAD_TYPE
++     */
 +    IDF3::CAD_TYPE GetCadType( void );
 +
++    /**
++     * Function GetCadType
++     * returns the IDF UNIT type of the parent object or IDF3::UNIT_INVALID if
++     * the parent was not set
++     *
++     * @return IDF3::IDF_UNIT
++     */
 +    IDF3::IDF_UNIT GetUnit( void );
 +
++    /**
++     * Function SetRefDes
++     * sets the Reference Designator (RefDes) of this component; the RefDes is shared
++     * by all outlines associated with this component.
++     *
++     * @return bool: true if the RefDes was accepted, otherwise false. Prohibited
++     * values include empty strings and the word PANEL.
++     */
 +    bool SetRefDes( const std::string& aRefDes );
++
++    /**
++     * Function GetRefDes
++     * Retrieves the Reference Designator (RefDes) of this component
++     *
++     * @return string: the Reference Designator
++     */
 +    const std::string& GetRefDes( void );
 +
++    // qwerty
 +    IDF_DRILL_DATA* AddDrill( double aDia, double aXpos, double aYpos,
 +                              IDF3::KEY_PLATING aPlating,
 +                              const std::string aHoleType,
@@ -10618,43 +10760,43 @@
 +
 +    // Set the unit; this can only be done internally upon
 +    // reading a file or saving
-+    bool SetUnit( IDF3::IDF_UNIT aUnit, bool convert = false );
++    bool setUnit( IDF3::IDF_UNIT aUnit, bool convert = false );
 +
-+    IDF_DRILL_DATA* AddCompDrill( double aDia, double aXpos, double aYpos,
++    IDF_DRILL_DATA* addCompDrill( double aDia, double aXpos, double aYpos,
 +                                  IDF3::KEY_PLATING aPlating,
 +                                  const std::string aHoleType,
 +                                  IDF3::KEY_OWNER aOwner,
 +                                  const std::string& aRefDes );
 +
-+    IDF_DRILL_DATA* AddCompDrill( IDF_DRILL_DATA* aDrilledHole );
++    IDF_DRILL_DATA* addCompDrill( IDF_DRILL_DATA* aDrilledHole );
 +
-+    bool DelCompDrill( double aDia, double aXpos, double aYpos, std::string aRefDes );
++    bool delCompDrill( double aDia, double aXpos, double aYpos, std::string aRefDes );
 +
 +    // read the DRILLED HOLES section
-+    bool ReadBrdDrills( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
++    bool readBrdDrills( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
 +    // read the NOTES section
-+    bool ReadBrdNotes( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
++    bool readBrdNotes( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
 +    // read the component placement section
-+    bool ReadBrdPlacement( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
++    bool readBrdPlacement( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
 +    // read the board HEADER
-+    bool ReadBrdHeader( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
++    bool readBrdHeader( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
 +    // read individual board sections; pay attention to IDFv3 section specifications
-+    bool ReadBrdSection( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
++    bool readBrdSection( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState );
 +    // read the board file data
-+    bool ReadBoardFile( const std::string& aFileName );
++    bool readBoardFile( const std::string& aFileName );
 +
 +    // write the board file data
-+    bool WriteBoardFile( const std::string& aFileName );
++    bool writeBoardFile( const std::string& aFileName );
 +
 +    // read the library sections (outlines)
-+    bool ReadLibSection( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState, IDF3_BOARD* aBoard );
++    bool readLibSection( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState, IDF3_BOARD* aBoard );
 +    // read the library HEADER
-+    bool ReadLibHeader( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState );
++    bool readLibHeader( std::ifstream& aLibFile, IDF3::FILE_STATE& aLibState );
 +    // read the library file data
-+    bool ReadLibFile( const std::string& aFileName );
++    bool readLibFile( const std::string& aFileName );
 +
 +    // write the library file data
-+    bool WriteLibFile( const std::string& aFileName );
++    bool writeLibFile( const std::string& aFileName );
 +
 +public:
 +    IDF3_BOARD( IDF3::CAD_TYPE aCadType );
@@ -10758,45 +10900,7 @@
 +    // clears all data
 +    void Clear( void );
 +};
-+// BOARD contains:
-+//      std::list<IDF_DRILL_DATA*> board_drills;      ///< IDF drill data for BOARD only (others must be in component)
-+//      [ note: board outline needs an owner; also implement an internal OUTLINE_TYPE ]
-+//      boardOutline: list of outlines (and cutouts) for the board
-+//      board comment list (what appears before the header)
 +
-+//      [ note: various outline types below are derived classes and support different sets of attributes ]
-+//      OTHER OUTLINE LISTS {with accompanying OWNER type} [outline + cutout] ( .OTHER_OUTLINE may be specified multiple times )
-+//              + ATTR:
-+//                  OutlineID (string, ensure UNIQUE within OTHER OUTLINE LIST)
-+//                  Thickness (float)
-+//                  board side (TOP/BOTTOM)
-+//      ROUTING OUTLINE LISTS {w/ owner} [single outline only, 0/1] ( .ROUTE_OUTLINE may be specified multiple times )
-+//              + ATTR:
-+//                  Routing Layers: (TOP/BOTTOM/BOTH/INNER/ALL)
-+//      PLACEMENT OUTLINE LISTS {w/ owner} [single outline only, 0/1]
-+//              + ATTR:
-+//                  board side (TOP/BOTTOM/BOTH)
-+//                  height
-+//      ROUTING_KEEPOUT LISTS {w/ owner} [single outline only, 0/1] ( may be specified multiple times )
-+//              + ATTR:
-+//                  routing layers: (TOP/BOTTOM/BOTH/INNER/ALL)
-+//      VIA_KEEPOUT LISTS {w/ owner} [single outline only, 0/1] ( may be specified multiple times )
-+//      PLACEMENT_KEEPOUT LISTS {w/ owner} [single outline only, 0/1] ( may be specified multiple times )
-+//              + ATTR:
-+//                  board side: (TOP/BOTTOM/BOTH)
-+//                  keepout height (MAX COMPONENT HEIGHT): float
-+//      PLACEMENT_GROUP LISTS {w/ owner} [single outline only, 0/1] ( may be specified multiple times )
-+//              + ATTR:
-+//                  board side: (TOP/BOTTOM/BOTH)
-+//                  component group name: string (NO restrictions imposed)
-+//      NOTES_SECTION LIST:
-+//              (see spec for details)
-+//      PLACEMENT SECTION: implied by COMPONENT LIST
-+//
-+//      NOTE AS PER SPEC: HEADER *MUST* be the first section, followed by OUTLINE,
-+//          and PLACEMENT *MUST* be the last section. All other sections in
-+//          between may be in *ANY* order.
-+//
 +#endif // IDF_PARSER_H
 
 === modified file 'utils/idftools/idf_rect.cpp'
@@ -10968,8 +11072,8 @@
 
 === added file 'utils/idftools/vrml_board.cpp'
 --- utils/idftools/vrml_board.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/vrml_board.cpp	2014-05-19 21:21:48 +0000
-@@ -0,0 +1,1631 @@
++++ utils/idftools/vrml_board.cpp	2014-05-20 07:10:49 +0000
+@@ -0,0 +1,1555 @@
 +/*
 + * file: vrml_board.cpp
 + *
@@ -11056,25 +11160,32 @@
 +}
 +
 +
-+static int CalcNSides( double rad, double dev )
++int VRML_LAYER::calcNSides( double aRadius, double aAngle )
 +{
-+    if( dev <= 0 || rad <= 0 )
-+        return 6;
++    // check #segments on ends of arc
++    int maxSeg = maxArcSeg * aAngle / M_PI;
 +
-+    int csides;
-+    double n = dev / rad;
++    if( maxSeg < 3 )
++        maxSeg = 3;
 +
-+    // note: in the following, the first comparison and csides is chosen to
-+    // yield a maximum of 360 segments; in practice we probably want a smaller limit.
-+    if( n < 0.0001523048 )
-+        csides = 360;
-+    else if( n >= 0.5 ) // 0.5 yields an angle >= 60 deg. (6 or fewer sides)
-+        csides = 6;
-+    else
-+        csides = M_PI * 2.0 / acos( 1.0 - n ) + 1;
++    int csides = aRadius * M_PI / minSegLength;
 +
-+    if( csides < 6 )
-+        csides = 6;
++    if( csides < 0 )
++        csides = -csides;
++
++    if( csides > maxSeg )
++    {
++        if( csides < 2 * maxSeg )
++            csides /= 2;
++        else
++            csides = (((double) csides) * minSegLength / maxSegLength );
++    }
++
++    if( csides < 3 )
++        csides = 3;
++
++    if( (csides & 1) == 0 )
++        csides += 1;
 +
 +    return csides;
 +}
@@ -11135,7 +11246,6 @@
 +    ord = 0;
 +    glcmd   = 0;
 +    pholes  = NULL;
-+    maxdev  = 0.02;
 +
 +    tess = gluNewTess();
 +
@@ -11217,23 +11327,6 @@
 +    }
 +
 +    clearTmp();
-+}
-+
-+
-+// set the max. deviation of an arc segment
-+bool VRML_LAYER::SetMaxDev( double max )
-+{
-+    // assure max. dev > 2 microns regardless of the
-+    // prevailing units ( inch, mm, m, 0.1 inch )
-+    if( max < 0.000002 )
-+    {
-+        error = "SetMaxDev(): specified value is < 0.000002";
-+        return false;
-+    }
-+
-+    maxdev = max;
-+
-+    return true;
 +}
 +
 +
@@ -11405,7 +11498,7 @@
 +    if( nsides < MIN_NSIDES )
 +        nsides = MIN_NSIDES;
 +
-+    // even numbers give prettier results
++    // even numbers give prettier results for circles
 +    if( nsides & 1 )
 +        nsides += 1;
 +
@@ -11419,8 +11512,6 @@
 +
 +        for( double angle = da; angle < M_PI * 2; angle += da )
 +            fail |= !AddVertex( contour, x + rad * cos( angle ), y - rad * sin( angle ) );
-+
-+        // fail |= !AddVertex( contour, x + rad, y );
 +    }
 +    else
 +    {
@@ -11428,8 +11519,6 @@
 +
 +        for( double angle = da; angle < M_PI * 2; angle += da )
 +            fail |= !AddVertex( contour, x + rad * cos( angle ), y + rad * sin( angle ) );
-+
-+        // fail |= !AddVertex( contour, x + rad, y );
 +    }
 +
 +    return !fail;
@@ -11455,8 +11544,10 @@
 +// adds a slotted pad with orientation given by angle; if 'hole' is true the
 +// contour is a hole. Returns true if OK.
 +bool VRML_LAYER::AddSlot( double cx, double cy, double length, double width,
-+        double angle, int csides, bool hole )
++        double angle, bool hole )
 +{
++    angle *= M_PI / 180.0;
++
 +    if( width > length )
 +    {
 +        angle += M_PI2;
@@ -11466,13 +11557,7 @@
 +    width   /= 2.0;
 +    length  = length / 2.0 - width;
 +
-+    if( csides < 6 )
-+        csides = CalcNSides( width, maxdev );
-+
-+    if( csides & 1 )
-+        csides += 1;
-+
-+    csides /= 2;
++    int csides = calcNSides( width, M_PI );
 +
 +    double capx, capy;
 +
@@ -11530,7 +11615,8 @@
 +    return !fail;
 +}
 +
-+// adds an arc to the given center, start point, pen width, and angle.
++
++// adds an arc to the given center, start point, pen width, and angle (degrees).
 +bool VRML_LAYER::AppendArc( double x, double y, double rad, double startAngle, double angle, int contour )
 +{
 +    if( contour < 0 || (unsigned int) contour >= contours.size() )
@@ -11539,34 +11625,10 @@
 +        return false;
 +    }
 +
-+    int nsides = M_PI * 2.0 * rad / minSegLength;
-+
-+    if( nsides > maxArcSeg )
-+    {
-+        if( nsides > 2 * maxArcSeg )
-+        {
-+            // use segments approx. maxAr
-+            nsides = M_PI * 2.0 * rad / maxSegLength;
-+        }
-+        else
-+        {
-+            nsides /= 2;
-+        }
-+    }
-+
-+    if( nsides < MIN_NSIDES )
-+        nsides = MIN_NSIDES;
-+
-+    if( angle > 0 )
-+        nsides = ( ( (double) nsides ) * angle / 180.0 );
-+    else
-+        nsides = -( ( (double) nsides ) * angle / 180.0 );
-+
 +    angle = angle / 180.0 * M_PI;
 +    startAngle = startAngle / 180.0 * M_PI;
 +
-+    if( nsides < 1 )
-+        nsides = 1;
++    int nsides = calcNSides( rad, angle );
 +
 +    double da = angle / nsides;
 +
@@ -11585,20 +11647,21 @@
 +            fail |= !AddVertex( contour, x + rad * cos( ang ), y + rad * sin( ang ) );
 +    }
 +
-+    // fail |= !AddVertex( contour, x + rad * cos( angle ), y + rad * sin( angle ) );
-+
 +    return !fail;
 +}
 +
-+// adds an arc with the given center, start point, pen width, and angle.
++
++// adds an arc with the given center, start point, pen width, and angle (degrees).
 +bool VRML_LAYER::AddArc( double cx, double cy, double startx, double starty,
-+        double width, double angle, int csides, bool hole )
++        double width, double angle, bool hole )
 +{
++    angle *= M_PI / 180.0;
++
 +    // we don't accept small angles; in fact, 1 degree ( 0.01745 ) is already
 +    // way too small but we must set a limit somewhere
 +    if( angle < 0.01745 && angle > -0.01745 )
 +    {
-+        error = "AddArc(): angle is too small: abs( angle ) < 0.01745";
++        error = "AddArc(): angle is too small: abs( angle ) < 1 degree";
 +        return false;
 +    }
 +
@@ -11619,44 +11682,9 @@
 +    double  orad    = rad + width;
 +    double  irad    = rad - width;
 +
-+    int osides  = csides * angle / ( M_PI * 2.0 );
-+    int isides  = csides * angle / ( M_PI * 2.0 );
-+
-+    if( osides < 0 )
-+        osides = -osides;
-+
-+    if( osides < 3 )
-+    {
-+        osides = CalcNSides( orad, maxdev ) * angle / ( M_PI * 2.0 );
-+
-+        if( osides < 0 )
-+            osides = -osides;
-+
-+        if( osides < 3 )
-+            osides = 3;
-+    }
-+
-+    if( isides < 0 )
-+        isides = -isides;
-+
-+    if( isides < 3 )
-+    {
-+        isides = CalcNSides( irad, maxdev ) * angle / ( M_PI * 2.0 );
-+
-+        if( isides < 0 )
-+            isides = -isides;
-+
-+        if( isides < 3 )
-+            isides = 3;
-+    }
-+
-+    if( csides < 6 )
-+        csides = CalcNSides( width, maxdev );
-+
-+    if( csides & 1 )
-+        csides += 1;
-+
-+    csides /= 2;
++    int osides  = calcNSides( orad, angle );
++    int isides  = calcNSides( irad, angle );
++    int csides  = calcNSides( width, M_PI );
 +
 +    double  stAngle     = atan2( starty - cy, startx - cx );
 +    double  endAngle    = stAngle + angle;
@@ -12604,8 +12632,8 @@
 
 === added file 'utils/idftools/vrml_board.h'
 --- utils/idftools/vrml_board.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/vrml_board.h	2014-05-19 02:49:15 +0000
-@@ -0,0 +1,420 @@
++++ utils/idftools/vrml_board.h	2014-05-20 07:34:07 +0000
+@@ -0,0 +1,429 @@
 +/*
 + * file: vrml_board.h
 + *
@@ -12712,8 +12740,6 @@
 +
 +    std::string error;                      // error message
 +
-+    double maxdev;                          // max. deviation from circle when calculating N sides
-+
 +    int hidx;                               // number of vertices in the holes
 +    int eidx;                               // index for extra vertices
 +    std::vector<VERTEX_3D*> extra_verts;    // extra vertices added for outlines and facets
@@ -12741,6 +12767,9 @@
 +    void pushVertices( bool holes );            // push the internal vertices
 +    bool pushOutline( VRML_LAYER* holes );      // push the outline vertices
 +
++    // calculate number of sides on an arc (angle is in radians)
++    int calcNSides( double aRadius, double aAngle );
++
 +public:
 +    /// set to true when a fault is encountered during tesselation
 +    bool Fault;
@@ -12748,12 +12777,32 @@
 +    VRML_LAYER();
 +    virtual ~VRML_LAYER();
 +
++    /**
++     * Function GetArcParams
++     * retieves the parameters used in calculating the number of vertices in an arc
++     *
++     * @param aMaxSeg is the maximum number of segments for an arc with cords of length aMinLength
++     * @param aMinLength is the minimum length of cords in an arc
++     * @param aMaxLength is the maximum length of cords in an arc
++     */
 +    void GetArcParams( int& aMaxSeg, double& aMinLength, double& aMaxLength );
++
++    /**
++     * Function SetArcParams
++     * sets the parameters used in calculating the number of vertices in an arc.
++     * The default settings are reasonable for rendering for unit lengths of 1mm
++     *
++     * @param aMaxSeg is the maximum number of segments for an arc with cords of length aMinLength
++     * @param aMinLength is the minimum length of cords in an arc
++     * @param aMaxLength is the maximum length of cords in an arc
++     *
++     * @return bool: true if the parameters were accepted
++     */
 +    bool SetArcParams( int aMaxSeg, double aMinLength, double aMaxLength );
 +
 +    /**
 +     * Function Clear
-+     * erases all data.
++     * erases all data except for arc parameters.
 +     */
 +    void Clear( void );
 +
@@ -12771,19 +12820,6 @@
 +    {
 +        return contours.size();
 +    }
-+
-+    /**
-+     * Function SetMaxDev
-+     * sets the maximum deviation from a circle; this parameter is
-+     * used for the automatic calculation of segments within a
-+     * circle or an arc.
-+     *
-+     * @param max is the maximum deviation from a perfect circle or arc;
-+     * minimum value is 0.000002 units
-+     *
-+     * @return bool: true if the value was accepted
-+     */
-+    bool SetMaxDev( double max );
 +
 +    /**
 +     * Function NewContour
@@ -12824,8 +12860,7 @@
 +     * @param x is the X coordinate of the hole center
 +     * @param y is the Y coordinate of the hole center
 +     * @param rad is the radius of the hole
-+     * @param csides is the number of sides (segments) in a circle;
-+     *      use a value of 1 to automatically calculate a suitable number.
++     * @param contour is the contour index
 +     * @param hole determines if the contour to be created is a cutout
 +     *
 +     * @return bool: true if the new contour was successfully created
@@ -12839,8 +12874,6 @@
 +     * @param x is the X coordinate of the hole center
 +     * @param y is the Y coordinate of the hole center
 +     * @param rad is the radius of the hole
-+     * @param csides is the number of sides (segments) in a circle;
-+     *      use a value of 1 to automatically calculate a suitable number.
 +     * @param hole determines if the contour to be created is a cutout
 +     *
 +     * @return bool: true if the new contour was successfully created
@@ -12851,23 +12884,30 @@
 +     * Function AddSlot
 +     * creates and adds a slot feature to the list of contours
 +     *
-+     * @param cx is the X coordinate of the slot
-+     * @param cy is the Y coordinate of the slot
++     * @param cx is the X coordinate of the slot's center
++     * @param cy is the Y coordinate of the slot's center
 +     * @param length is the length of the slot along the major axis
 +     * @param width is the width of the slot along the minor axis
-+     * @param angle (radians) is the orientation of the slot
-+     * @param csides is the number of sides to a circle; use 1 to
-+     *  take advantage of automatic calculations.
++     * @param angle (degrees) is the orientation of the slot
 +     * @param hole determines whether the slot is a hole or a solid
 +     *
 +     * @return bool: true if the slot was successfully created
 +     */
 +    bool AddSlot( double cx, double cy, double length, double width,
-+            double angle, int csides, bool hole = false );
++            double angle, bool hole = false );
 +
 +    /**
 +     * Function AppendArc
 +     * adds an arc to the specified contour
++     *
++     * @param x is the X coordinate of the arc's center
++     * @param y is the Y coordinate of the arc's center
++     * @param rad is the radius of the arc
++     * @param startAngle (degrees) is the starting angle of the arc
++     * @param angle (degrees) is the measure of the arc
++     * @param contour is the contour's index
++     *
++     * @return bool: true if the slot was successfully created
 +     */
 +    bool AppendArc( double x, double y, double rad, double startAngle, double angle, int contour );
 +
@@ -12880,16 +12920,13 @@
 +     * @param startx is the X coordinate of the starting point
 +     * @param starty is the Y coordinate of the starting point
 +     * @param width is the width of the arc
-+     * @param angle is the included angle
-+     * @param csides is the number of segments in a circle; use 1
-+     *  to take advantage of automatic calculations of this number
++     * @param angle is the included angle (degrees)
 +     * @param hole determined whether the arc is to be a hole or a solid
 +     *
 +     * @return bool: true if the feature was successfully created
 +     */
 +    bool AddArc( double cx, double cy, double startx, double starty,
-+            double width, double angle, int csides, bool hole = false );
-+
++            double width, double angle, bool hole = false );
 +
 +    /**
 +     * Function Tesselate
