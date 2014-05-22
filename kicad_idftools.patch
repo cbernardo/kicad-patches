@@ -109,7 +109,7 @@
 
 === added file 'utils/idftools/build.sh'
 --- utils/idftools/build.sh	1970-01-01 00:00:00 +0000
-+++ utils/idftools/build.sh	2014-05-21 23:14:47 +0000
++++ utils/idftools/build.sh	2014-05-22 08:38:35 +0000
 @@ -0,0 +1,99 @@
 +#! /bin/bash
 +#g++ -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp
@@ -119,12 +119,12 @@
 +
 +# set these flags to (re)build each unit
 +IDF_HELPERS=false
-+IDF_OUTLINES=true
++IDF_OUTLINES=false
 +IDF_PARSER=false
 +IDF_COMMON=false
 +VRML_BOARD=false
-+MAIN=true
-+APP=true
++MAIN=false
++APP=false
 +
 +
 +if ( ${IDF_HELPERS} )
@@ -1067,8 +1067,8 @@
 
 === added file 'utils/idftools/idf_common.cpp'
 --- utils/idftools/idf_common.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_common.cpp	2014-05-19 08:08:14 +0000
-@@ -0,0 +1,1334 @@
++++ utils/idftools/idf_common.cpp	2014-05-22 07:08:47 +0000
+@@ -0,0 +1,1376 @@
 +/**
 + * file: idf_common.cpp
 + *
@@ -1108,6 +1108,48 @@
 +
 +using namespace IDF3;
 +using namespace std;
++
++
++std::string source;
++std::string message;
++
++IDF_ERROR::IDF_ERROR( const char* aSourceFile,
++           const char* aSourceMethod,
++           int         aSourceLine,
++           const std::string& aMessage ) throw()
++{
++    ostringstream ostr;
++
++    if( aSourceFile )
++        ostr << "* " << aSourceFile << ":";
++    else
++        ostr << "* [BUG: No Source File]:";
++
++    ostr << aSourceLine << ":";
++
++    if( aSourceMethod )
++        ostr << aSourceMethod << "(): ";
++    else
++        ostr << "[BUG: No Source Method]:\n* ";
++
++    ostr << aMessage;
++    message = ostr.str();
++
++    return;
++}
++
++
++IDF_ERROR::~IDF_ERROR() throw()
++{
++    return;
++}
++
++
++const char* IDF_ERROR::what() const throw()
++{
++    return message.c_str();
++}
++
 +
 +IDF_NOTE::IDF_NOTE()
 +{
@@ -2406,8 +2448,8 @@
 
 === added file 'utils/idftools/idf_common.h'
 --- utils/idftools/idf_common.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_common.h	2014-05-16 00:55:12 +0000
-@@ -0,0 +1,440 @@
++++ utils/idftools/idf_common.h	2014-05-22 08:10:55 +0000
+@@ -0,0 +1,705 @@
 +/**
 + * @file idf_common.h
 + */
@@ -2440,6 +2482,8 @@
 +
 +#include <list>
 +#include <fstream>
++#include <exception>
++#include <string>
 +
 +#ifndef M_PI
 +#define M_PI 3.1415926535897932384626433832795028841
@@ -2462,8 +2506,28 @@
 +class IDF_OUTLINE;
 +class IDF_LIB;
 +
++
++struct IDF_ERROR : std::exception
++{
++    std::string message;
++
++    IDF_ERROR( const char* aSourceFile,
++               const char* aSourceMethod,
++               int         aSourceLine,
++               const std::string& aMessage ) throw();
++
++    virtual ~IDF_ERROR() throw();
++
++    virtual const char* what() const throw();
++};
++
++
 +namespace IDF3 {
 +
++    /**
++     * ENUM FILE_STATE
++     * represents state values for the IDF parser's input
++     */
 +    enum FILE_STATE
 +    {
 +        FILE_START = 0, // no data has been read; expecting .HEADER
@@ -2474,6 +2538,10 @@
 +        FILE_ERROR      // other errors while processing the file
 +    };
 +
++    /**
++     * ENUM KEY_OWNER
++     * represents the type of CAD which has ownership an object
++     */
 +    enum KEY_OWNER
 +    {
 +        UNOWNED = 0,        //< either MCAD or ECAD may modify a feature
@@ -2481,6 +2549,10 @@
 +        ECAD                //< only ECAD may modify a feature
 +    };
 +
++    /**
++     * ENUM KEY_HOLETYPE
++     * represents the purpose of an IDF hole
++     */
 +    enum KEY_HOLETYPE
 +    {
 +        PIN = 0,            //< drill hole is for a pin
@@ -2490,12 +2562,20 @@
 +        OTHER               //< user has specified a custom type
 +    };
 +
++    /**
++     * ENUM KEY_PLATING
++     * represents the plating condition of a hole
++     */
 +    enum KEY_PLATING
 +    {
 +        PTH = 0,            //< Plate-Through Hole
 +        NPTH                //< Non-Plate-Through Hole
 +    };
 +
++    /**
++     * ENUM KEY_REFDES
++     * represents a component's Reference Designator
++     */
 +    enum KEY_REFDES
 +    {
 +        BOARD = 0,          //< feature is associated with the board
@@ -2504,6 +2584,10 @@
 +        REFDES              //< reference designator as assigned by the CAD software
 +    };
 +
++    /**
++     * ENUM CAD_TYPE
++     * represents the class of CAD program which is opening or modifying a file
++     */
 +    enum CAD_TYPE
 +    {
 +        CAD_ELEC = 0,       //< An Electrical CAD is opening/modifying the file
@@ -2511,6 +2595,10 @@
 +        CAD_INVALID
 +    };
 +
++    /**
++     * ENUM IDF_LAYER
++     * represents the various IDF layer classes and groupings
++     */
 +    enum IDF_LAYER
 +    {
 +        LYR_TOP = 0,
@@ -2521,6 +2609,10 @@
 +        LYR_INVALID
 +    };
 +
++    /**
++     * ENUM OUTLINE_TYPE
++     * identifies the class of outline
++     */
 +    enum OUTLINE_TYPE
 +    {
 +        OTLN_BOARD = 0,
@@ -2535,6 +2627,10 @@
 +        OTLN_INVALID
 +    };
 +
++    /**
++     * ENUM COMP_TYPE
++     * identifies whether a component is a mechanical or electrical part
++     */
 +    enum COMP_TYPE
 +    {
 +        COMP_ELEC = 0,      //< Component library object is an electrical part
@@ -2542,6 +2638,10 @@
 +        COMP_INVALID
 +    };
 +
++    /**
++     * ENUM IDF_UNIT
++     * represents the native unit of the board and of component outlines
++     */
 +    enum IDF_UNIT
 +    {
 +        UNIT_MM = 0,        //< Units in the file are in millimeters
@@ -2549,6 +2649,10 @@
 +        UNIT_INVALID
 +    };
 +
++    /**
++     * ENUM IDF_PLACEMENT
++     * represents the placement status of a component
++     */
 +    enum IDF_PLACEMENT
 +    {
 +        PS_UNPLACED = 0,    //< component location on the board has not been specified
@@ -2558,11 +2662,41 @@
 +        PS_INVALID
 +    };
 +
-+    // calculate the angle between the horizon and the segment aStartPoint to aEndPoint
++    /**
++     * Function CalcAngleRad
++     * calculates the angle (radians) between the horizon and the segment aStartPoint to aEndPoint
++     *
++     * @param aStartPoint is the start point of a line segment
++     * @param aEndPoint is the end point of a line segment
++     *
++     * @return double: the angle in radians
++     */
 +    double  CalcAngleRad( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
++
++
++    /**
++     * Function CalcAngleDeg
++     * calculates the angle (degrees) between the horizon and the segment aStartPoint to aEndPoint
++     *
++     * @param aStartPoint is the start point of a line segment
++     * @param aEndPoint is the end point of a line segment
++     *
++     * @return double: the angle in degrees
++     */
 +    double  CalcAngleDeg( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
 +
-+    // take contiguous elements from 'lines' and stuff them into 'outline'
++    /**
++     * Function GetOutline
++     * takes contiguous elements from 'aLines' and stuffs them into 'aOutline'; elements put
++     * into the outline are deleted from aLines. This function is useful for sorting the jumbled
++     * mess of line segments and arcs which represent a board outline and cutouts in KiCad.
++     * The function will determine which segment element within aLines contains the leftmost
++     * point and retrieve the outline of which that segment is part.
++     *
++     * @param aLines (input/output) is a list of IDF segments which comprise an outline and
++     *        cutouts.
++     * @param aOutline (output) is the ordered set of segments
++     */
 +    void GetOutline( std::list<IDF_SEGMENT*>& aLines,
 +                     IDF_OUTLINE& aOutline );
 +
@@ -2573,27 +2707,81 @@
 +}
 +
 +
++/**
++ * Class IDF_NOTE
++ * represents an entry in the NOTE section of an IDF file
++ */
 +class IDF_NOTE
 +{
 +private:
-+    std::string text;
-+    double xpos;
-+    double ypos;
-+    double height;
-+    double length;
++    std::string text;   // note text as per IDFv3
++    double xpos;        // text X position as per IDFv3
++    double ypos;        // text Y position as per IDFv3
++    double height;      // text height as per IDFv3
++    double length;      // text length as per IDFv3
 +
 +public:
 +    IDF_NOTE();
 +
++    /**
++     * Function ReadNote
++     * reads a note entry from an IDFv3 file
++     *
++     * @param aBoardFile is an open BOARD file; the file position must be set to the start of a NOTE entry
++     * @param aBoardState is the parser's current state value
++     * @param aBoardUnit is the BOARD file's native units (MM or THOU)
++     *
++     * @return bool: true if a note item was read, false otherwise. In case of unrecoverable errors
++     * an exception is thrown
++     */
 +    bool ReadNote( std::ifstream& aBoardFile, IDF3::FILE_STATE& aBoardState, IDF3::IDF_UNIT aBoardUnit );
++
++    /**
++     * Function WriteNote
++     * writes a note entry to an IDFv3 file
++     *
++     * @param aBoardFile is an open BOARD file; the file position must be within a NOTE section
++     * @param aBoardUnit is the BOARD file's native units (MM or THOU)
++     *
++     * @return bool: true if the item was successfully written, false otherwise. In case of
++     * unrecoverable errors an exception is thrown
++     */
 +    bool WriteNote( std::ofstream& aBoardFile, IDF3::IDF_UNIT aBoardUnit );
 +
++    /**
++     * Function SetText
++     * sets the text to be stored as a NOTE entry
++     */
 +    void SetText( const std::string& aText );
++
++    /**
++     * Function SetPosition
++     * sets the position (mm) of the NOTE entry
++     */
 +    void SetPosition( double aXpos, double aYpos );
++
++    /**
++     * Function SetSize
++     * sets the height and length (mm) of the NOTE entry
++     */
 +    void SetSize( double aHeight, double aLength );
 +
++    /**
++     * Function GetText
++     * returns the string stored in the note entry
++     */
 +    const std::string& GetText( void );
++
++    /**
++     * Function GetText
++     * returns the position (mm) of the note entry
++     */
 +    void GetPosition( double& aXpos, double& aYpos );
++
++    /**
++     * Function GetText
++     * returns the height and length (mm) of the note entry
++     */
 +    void GetSize( double& aHeight, double& aLength );
 +};
 +
@@ -2619,6 +2807,13 @@
 +public:
 +    /**
 +     * Constructor IDF_DRILL_DATA
++     * creates an empty drill entry which can be populated by the
++     * Read() function
++     */
++    IDF_DRILL_DATA();
++
++    /**
++     * Constructor IDF_DRILL_DATA
 +     * creates a drill entry with information compliant with the
 +     * IDFv3 specifications.
 +     * @param aDrillDia : drill diameter
@@ -2629,40 +2824,95 @@
 +     * @param aHoleType : purpose of hole
 +     * @param aOwner : one of MCAD, ECAD, UNOWNED
 +     */
-+    IDF_DRILL_DATA();
-+
 +    IDF_DRILL_DATA( double aDrillDia, double aPosX, double aPosY,
 +                    IDF3::KEY_PLATING aPlating,
 +                    const std::string aRefDes,
 +                    const std::string aHoleType,
 +                    IDF3::KEY_OWNER aOwner );
 +
++    /**
++     * Function Matches
++     * returns true if the given drill diameter and location
++     * matches the diameter and location of this IDF_DRILL_DATA object
++     *
++     * @param aDrillDia is the drill diameter (mm)
++     * @param aPosX is the X position (mm) of the drilled hole
++     * @param aPosY is the Y position (mm) of the drilled hole
++     *
++     * @return bool: true if the diameter and position match this object
++     */
 +    bool Matches( double aDrillDia, double aPosX, double aPosY );
 +
 +    /**
 +     * Function Read
-+     * read a single line from an IDFv3 .DRILLED_HOLES section
++     * read a drill entry from an IDFv3 file
++     *
++     * @param aBoardFile is an open IDFv3 file; the file position must be within the DRILLED_HOLES section
++     * @param aBoardUnit is the board file's native unit (MM or THOU)
++     * @param aBoardState is the state value of the parser
++     *
++     * @return bool: true if data was successfully read, otherwise false. In case of an
++     * unrecoverable error an exception is thrown
 +     */
 +    bool Read( std::ifstream& aBoardFile, IDF3::IDF_UNIT aBoardUnit, IDF3::FILE_STATE aBoardState );
 +
 +    /**
 +     * Function Write
-+     * writes a single line representing the hole within a .DRILLED_HOLES section
++     * writes a single line representing a hole within a .DRILLED_HOLES section
++     *
++     * @param aBoardFile is an open BOARD file
++     * @param aBoardUnit is the native unit of the output file
++     *
++     * @return bool: true if the data was successfully written, otherwise false. In case of
++     * an unrecoverable error an exception is thrown
 +     */
 +    bool Write( std::ofstream& aBoardFile, IDF3::IDF_UNIT aBoardUnit );
 +
++    /**
++     * Function GettDrillDia
++     * returns the drill diameter in mm
++     */
 +    double GetDrillDia();
++
++
++    /**
++     * Function GettDrillXPos
++     * returns the drill's X position in mm
++     */
 +    double GetDrillXPos();
++
++    /**
++     * Function GettDrillYPos
++     * returns the drill's Y position in mm
++     */
 +    double GetDrillYPos();
++
++    /**
++     * Function GetDrillPlating
++     * returns the plating value (PTH, NPTH)
++     */
 +    IDF3::KEY_PLATING GetDrillPlating();
++
++    /**
++     * Function GetDrillRefDes
++     * returns the reference designator of the hole; this
++     * may be a component reference designator, BOARD, or
++     * NOREFDES as per IDFv3.
++     */
 +    const std::string& GetDrillRefDes();
++
++    /**
++     * Function GetDrillHoleType
++     * returns the classification of the hole; this may be one of
++     * PIN, VIA, MTG, TOOL, or a user-specified string
++     */
 +    const std::string& GetDrillHoleType();
 +};
 +
 +
 +/**
 + * @Class IDF_POINT
-+ * represents a point
++ * represents a point as used by the various IDF related classes
 + */
 +class IDF_POINT
 +{
@@ -2680,17 +2930,30 @@
 +     * Function Matches()
 +     * returns true if the given coordinate point is within the given radius
 +     * of the point.
++     *
 +     * @param aPoint : coordinates of the point being compared
-+     * @param aRadius : radius within which the points are considered the same
++     * @param aRadius : radius (mm) within which the points are considered the same
++     *
++     * @return bool: true if this point matches the given point
 +     */
 +    bool    Matches( const IDF_POINT& aPoint, double aRadius = 1e-5 );
++
++    /**
++     * Function CalcDistance()
++     * returns the Euclidean distance between this point and the given point
++     *
++     * @param aPoint : coordinates of the point whose distance is to be determined
++     *
++     * @return double: distance between this point and aPoint
++     */
 +    double  CalcDistance( const IDF_POINT& aPoint ) const;
 +};
 +
 +
 +/**
 + * @Class IDF_SEGMENT
-+ * represents a geometry segment as used in IDFv3 outlines
++ * represents a geometry segment as used in IDFv3 outlines; it may be any of
++ * an arc, line segment, or circle
 + */
 +class IDF_SEGMENT
 +{
@@ -2699,33 +2962,35 @@
 +     * Function CalcCenterAndRadius()
 +     * Calculates the center, radius, and angle between center and start point given the
 +     * IDF compliant points and included angle.
++     *
 +     * @var startPoint, @var endPoint, and @var angle must be set prior as per IDFv3
 +     */
 +    void CalcCenterAndRadius( void );
 +
 +public:
-+    IDF_POINT startPoint;   // starting point in IDF coordinates
-+    IDF_POINT endPoint;     // end point in IDF coordinates
-+    IDF_POINT   center;     // center of an arc or circle; used primarily for calculating min X
-+    double  angle;          // included angle (degrees) according to IDFv3 specification
-+    double  offsetAngle;    // angle between center and start of arc; used to speed up some calcs.
-+    double  radius;         // radius of the arc or circle; used to speed up some calcs.
++    IDF_POINT startPoint;   ///< starting point coordinates in mm
++    IDF_POINT endPoint;     ///< end point coordinates in mm
++    IDF_POINT   center;     ///< center of an arc or circle; internally calculated and not to be set by the user
++    double  angle;          ///< included angle (degrees) according to IDFv3 specification
++    double  offsetAngle;    ///< angle between center and start of arc; internally calculated
++    double  radius;         ///< radius of the arc or circle; internally calculated
 +
 +    /**
-+     * Function IDF_SEGMENT()
++     * Constructor IDF_SEGMENT
 +     * initializes the internal variables
 +     */
 +    IDF_SEGMENT();
 +
 +    /**
-+     * Function IDF_SEGMENT( start, end )
++     * Function IDF_SEGMENT
 +     * creates a straight segment
 +     */
 +    IDF_SEGMENT( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
 +
 +    /**
-+     * Function IDF_SEGMENT( start, end )
++     * Constructor IDF_SEGMENT
 +     * creates a straight segment, arc, or circle depending on the angle
++     *
 +     * @param aStartPoint : start point (center if using KiCad convention, otherwise IDF convention)
 +     * @param aEndPoint : end point (start of arc if using KiCad convention, otherwise IDF convention)
 +     * @param aAngle : included angle; the KiCad convention is equivalent to the IDF convention
@@ -2737,25 +3002,31 @@
 +                 bool aFromKicad );
 +
 +    /**
-+     * Function MatchesStart()
++     * Function MatchesStart
 +     * returns true if the given coordinate is within a radius 'rad'
 +     * of the start point.
-+     * @param aPoint : coordinates of the point being compared
-+     * @param aRadius : radius within which the points are considered the same
++     *
++     * @param aPoint : coordinates of the point (mm) being compared
++     * @param aRadius : radius (mm) within which the points are considered the same
++     *
++     * @return bool: true if the given point matches the start point of this segment
 +     */
 +    bool MatchesStart( const IDF_POINT& aPoint, double aRadius = 1e-3 );
 +
 +    /**
-+     * Function MatchesEnd()
++     * Function MatchesEnd
 +     * returns true if the given coordinate is within a radius 'rad'
 +     * of the end point.
-+     * @param aPoint : coordinates of the point being compared
-+     * @param aRadius : radius within which the points are considered the same
++     *
++     * @param aPoint : coordinates (mm) of the point being compared
++     * @param aRadius : radius (mm) within which the points are considered the same
++     *
++     * @return bool: true if the given point matches the end point of this segment
 +     */
 +    bool MatchesEnd( const IDF_POINT& aPoint, double aRadius = 1e-3 );
 +
 +    /**
-+     * Function IsCircle()
++     * Function IsCircle
 +     * returns true if this segment is a circle
 +     */
 +    bool IsCircle( void );
@@ -2782,20 +3053,29 @@
 +class IDF_OUTLINE
 +{
 +private:
-+    double dir;
-+    std::list<IDF_SEGMENT*> outline;
++    double dir;                         // accumulator to help determine winding direction
++    std::list<IDF_SEGMENT*> outline;    // sequential segments comprising an outline
 +
 +public:
 +    IDF_OUTLINE() { dir = 0.0; }
 +    ~IDF_OUTLINE() { Clear(); }
 +
-+    // returns true if the current list of points represents a counterclockwise winding
++    /**
++     * Function IsCCW
++     * returns true if the current list of points represents a counterclockwise winding
++     */
 +    bool IsCCW( void );
 +
-+    // returns true if the outline is a circle
++    /**
++     * Function IsCircle
++     * returns true if this outline is a circle
++     */
 +    bool IsCircle( void );
 +
-+    // clears the internal list of outline segments
++    /**
++     * Function Clear
++     * clears the internal list of outline segments
++     */
 +    void Clear( void )
 +    {
 +        dir = 0.0;
@@ -2807,43 +3087,70 @@
 +        }
 +    }
 +
-+    // returns the size of the internal segment list
++    /**
++     * Function size
++     * returns the size of the internal segment list
++     */
 +    size_t size( void )
 +    {
 +        return outline.size();
 +    }
 +
-+    // returns true if the internal segment list is empty
++    /**
++     * Function empty
++     * returns true if the internal segment list is empty
++     */
 +    bool empty( void )
 +    {
 +        return outline.empty();
 +    }
 +
-+    // return the front() of the internal segment list
++    /**
++     * Function front
++     * returns the front() iterator of the internal segment list
++     */
 +    IDF_SEGMENT*& front( void )
 +    {
 +        return outline.front();
 +    }
 +
-+    // return the back() of the internal segment list
++    /**
++     * Function back
++     * returns the back() iterator of the internal segment list
++     */
 +    IDF_SEGMENT*& back( void )
 +    {
 +        return outline.back();
 +    }
 +
-+    // return the begin() iterator of the internal segment list
++    /**
++     * Function begin
++     * returns the begin() iterator of the internal segment list
++     */
 +    std::list<IDF_SEGMENT*>::iterator begin( void )
 +    {
 +        return outline.begin();
 +    }
 +
-+    // return the end() iterator of the internal segment list
++    /**
++     * Function end
++     * returns the end() iterator of the internal segment list
++     */
 +    std::list<IDF_SEGMENT*>::iterator end( void )
 +    {
 +        return outline.end();
 +    }
 +
-+    // push a segment onto the internal list
++    /**
++     * Function push
++     * adds a segment to the internal segment list; segments must be added
++     * in order so that startPoint[N] == endPoint[N - 1]
++     *
++     * @param item is a pointer to the segment to add to the outline
++     *
++     * @return bool: true if the segment was added, otherwise false
++     * (outline restrictions have been violated)
++     */
 +    bool push( IDF_SEGMENT* item );
 +};
 +
@@ -3280,7 +3587,7 @@
 
 === added file 'utils/idftools/idf_helpers.cpp'
 --- utils/idftools/idf_helpers.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_helpers.cpp	2014-05-16 07:57:50 +0000
++++ utils/idftools/idf_helpers.cpp	2014-05-22 08:36:21 +0000
 @@ -0,0 +1,295 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
@@ -3549,7 +3856,7 @@
 +}
 +
 +
-+std::string IDF3::GetSideString( IDF3::IDF_LAYER aLayer )
++std::string IDF3::GetLayerString( IDF3::IDF_LAYER aLayer )
 +{
 +    switch( aLayer )
 +    {
@@ -3580,8 +3887,8 @@
 
 === added file 'utils/idftools/idf_helpers.h'
 --- utils/idftools/idf_helpers.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_helpers.h	2014-05-17 02:40:31 +0000
-@@ -0,0 +1,94 @@
++++ utils/idftools/idf_helpers.h	2014-05-22 08:37:17 +0000
+@@ -0,0 +1,171 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -3650,28 +3957,105 @@
 +namespace IDF3
 +{
 +
-+// fetch a line from the given input file and trim the ends
++/**
++ *  Function FetchIDFLine
++ *  retrieves a single line from an IDF file and performs minimal processing. If a comment symbol
++ *  is encountered then it is removed and a single leading space is removed if present; all trailing
++ *  spaces are removed. If the line is not a comment then all leading and trailing spaces are stripped.
++ *
++ * @param aModel is an open IDFv3 file
++ * @param aLine (output) is the line retrieved from the file
++ * @param isComment (output) is set to true if the line is a comment
++ * @param aFilePos (output) is set to the beginning of the line in case the file needs to be rewound
++ *
++ * @return bool: true if a line was read and was not empty; otherwise false
++ */
 +bool FetchIDFLine( std::ifstream& aModel, std::string& aLine, bool& isComment, std::streampos& aFilePos );
 +
-+// extract an IDF string and move the index to point to the character after the substring
++
++/**
++ * Function GetIDFString
++ * parses a line retrieved via FetchIDFLine() and returns the first IDF string found from the starting
++ * point aIndex
++ *
++ * @param aLine is the line to parse
++ * @param aIDFString (output) is the IDF string retrieved
++ * @param hasQuotes (output) is true if the string was in quotation marks
++ * @param aIndex (input/output) is the index into the input line
++ *
++ * @return bool: true if a string was retrieved, otherwise false
++ */
 +bool GetIDFString( const std::string& aLine, std::string& aIDFString,
 +                   bool& hasQuotes, int& aIndex );
 +
-+// perform a case-insentitive compare of a token string and an input string
++/**
++ * Function CompareToken
++ * performs a case-insensitive comparison of a token string and an input string
++ *
++ * @param aToken is an IDF token such as ".HEADER"
++ * @param aInputString is a string typically retrieved via GetIDFString
++ *
++ * @return bool: true if the token and input string match
++ */
 +bool CompareToken( const char* aTokenString, const std::string& aInputString );
 +
-+// parse a string for an IDF3::KEY_OWNER
++
++/**
++ * Function ParseOwner
++ * parses the input string for a valid IDF Owner type
++ *
++ * @param aToken is the string to be parsed
++ * @param aOwner (output) is the IDF Owner class
++ *
++ * @return bool: true if a valid OWNER was found, otherwise false
++ */
 +bool ParseOwner( const std::string& aToken, IDF3::KEY_OWNER& aOwner );
 +
-+// parse a string for an IDF3::IDF_LAYER
++
++/**
++ * Function ParseIDFLayer
++ * parses an input string for a valid IDF layer specification
++ *
++ * @param aToken is the string to be parsed
++ * @param aLayer (output) is the IDF Layer type or group
++ *
++ * @return bool: true if a valid IDF Layer type was found, otherwise false
++ */
 +bool ParseIDFLayer( const std::string& aToken, IDF3::IDF_LAYER& aLayer );
 +
-+// write the IDF3::IDF_LAYER as text
++
++/**
++ * Function WriteLayersText
++ * writes out text corresponding to the given IDF Layer type
++ *
++ * @param aBoardFile is an IDFv3 file open for output
++ * @param aLayer is the IDF Layer type
++ *
++ * @return bool: true if the data was successfully written, otherwise false
++ */
 +bool WriteLayersText( std::ofstream& aBoardFile, IDF3::IDF_LAYER aLayer );
 +
++
++/**
++ * Function GetPlacementString
++ * returns a string representing the given IDF Placement type
++ *
++ * @param aPlacement is the IDF placement type to encode as a string
++ *
++ * @return string: the string representation of aPlacement
++ */
 +std::string GetPlacementString( IDF3::IDF_PLACEMENT aPlacement );
 +
-+std::string GetSideString( IDF3::IDF_LAYER aLayer );
++
++/**
++ * Function GetLayerString
++ * returns a string representing the given IDF Layer type
++ *
++ * @param aLayer is the IDF layer type to encode as a string
++ *
++ * @return string: the string representation of aLayer
++ */
++std::string GetLayerString( IDF3::IDF_LAYER aLayer );
 +
 +}
 +
@@ -6593,7 +6977,7 @@
 
 === added file 'utils/idftools/idf_parser.cpp'
 --- utils/idftools/idf_parser.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.cpp	2014-05-20 08:28:31 +0000
++++ utils/idftools/idf_parser.cpp	2014-05-22 08:37:43 +0000
 @@ -0,0 +1,3819 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
@@ -7081,8 +7465,8 @@
 +            if( side != tL )
 +            {
 +                ERROR << "inconsistent PLACEMENT data\n";
-+                cerr << "* SIDE value has changed from " << GetSideString( tL );
-+                cerr << " to " << GetSideString( side ) << "\n";
++                cerr << "* SIDE value has changed from " << GetLayerString( tL );
++                cerr << " to " << GetLayerString( side ) << "\n";
 +                aBoardState = IDF3::FILE_INVALID;
 +                outline = NULL;
 +                return false;
