@@ -109,7 +109,7 @@
 
 === added file 'utils/idftools/build.sh'
 --- utils/idftools/build.sh	1970-01-01 00:00:00 +0000
-+++ utils/idftools/build.sh	2014-05-22 10:35:19 +0000
++++ utils/idftools/build.sh	2014-05-23 06:22:56 +0000
 @@ -0,0 +1,99 @@
 +#! /bin/bash
 +#g++ -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp
@@ -120,11 +120,11 @@
 +# set these flags to (re)build each unit
 +IDF_HELPERS=false
 +IDF_OUTLINES=false
-+IDF_PARSER=true
-+IDF_COMMON=true
++IDF_PARSER=false
++IDF_COMMON=false
 +VRML_BOARD=false
-+MAIN=false
-+APP=false
++MAIN=true
++APP=true
 +
 +
 +if ( ${IDF_HELPERS} )
@@ -227,8 +227,8 @@
 
 === added file 'utils/idftools/idf2vrml.cpp'
 --- utils/idftools/idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf2vrml.cpp	2014-05-22 00:51:22 +0000
-@@ -0,0 +1,835 @@
++++ utils/idftools/idf2vrml.cpp	2014-05-23 07:23:24 +0000
+@@ -0,0 +1,842 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -342,7 +342,7 @@
 +bool WriteHeader( IDF3_BOARD& board, std::ofstream& file );
 +bool MakeBoard( IDF3_BOARD& board, std::ofstream& file );
 +bool MakeComponents( IDF3_BOARD& board, std::ofstream& file, bool compact );
-+bool PopulateVRML( VRML_LAYER& model, std::list< IDF_OUTLINE* >& items, bool bottom,
++bool PopulateVRML( VRML_LAYER& model, const std::list< IDF_OUTLINE* >* items, bool bottom,
 +                   double scale, double dX = 0.0, double dY = 0.0, double angle = 0.0 );
 +bool AddSegment( VRML_LAYER& model, IDF_SEGMENT* seg, int icont, int iseg );
 +bool WriteTriangles( std::ofstream& file, VRML_IDS* vID, VRML_LAYER* layer, bool plane,
@@ -565,10 +565,10 @@
 +        vpcb.EnsureWinding( nvcont--, true );
 +
 +    // Add the drill holes
-+    std::list<IDF_DRILL_DATA*>* drills = &board.GetBoardDrills();
++    const std::list<IDF_DRILL_DATA*>* drills = &board.GetBoardDrills();
 +
-+    std::list<IDF_DRILL_DATA*>::iterator sd = drills->begin();
-+    std::list<IDF_DRILL_DATA*>::iterator ed = drills->end();
++    std::list<IDF_DRILL_DATA*>::const_iterator sd = drills->begin();
++    std::list<IDF_DRILL_DATA*>::const_iterator ed = drills->end();
 +
 +    while( sd != ed )
 +    {
@@ -577,13 +577,13 @@
 +        ++sd;
 +    }
 +
-+    std::map< std::string, IDF3_COMPONENT* >* comp = &board.GetComponents();
-+    std::map< std::string, IDF3_COMPONENT* >::iterator sc = comp->begin();
-+    std::map< std::string, IDF3_COMPONENT* >::iterator ec = comp->end();
++    std::map< std::string, IDF3_COMPONENT* >*const comp = board.GetComponents();
++    std::map< std::string, IDF3_COMPONENT* >::const_iterator sc = comp->begin();
++    std::map< std::string, IDF3_COMPONENT* >::const_iterator ec = comp->end();
 +
 +    while( sc != ec )
 +    {
-+        drills = &sc->second->GetDrills();
++        drills = sc->second->GetDrills();
 +        sd = drills->begin();
 +        ed = drills->end();
 +
@@ -611,18 +611,18 @@
 +    return true;
 +}
 +
-+bool PopulateVRML( VRML_LAYER& model, std::list< IDF_OUTLINE* >& items, bool bottom, double scale,
++bool PopulateVRML( VRML_LAYER& model, const std::list< IDF_OUTLINE* >* items, bool bottom, double scale,
 +                   double dX, double dY, double angle )
 +{
 +    // empty outlines are not unusual so we fail quietly
-+    if( items.size() < 1 )
++    if( items->size() < 1 )
 +        return false;
 +
 +    int nvcont = 0;
 +    int iseg   = 0;
 +
-+    std::list< IDF_OUTLINE* >::iterator scont = items.begin();
-+    std::list< IDF_OUTLINE* >::iterator econt = items.end();
++    std::list< IDF_OUTLINE* >::const_iterator scont = items->begin();
++    std::list< IDF_OUTLINE* >::const_iterator econt = items->end();
 +    std::list<IDF_SEGMENT*>::iterator sseg;
 +    std::list<IDF_SEGMENT*>::iterator eseg;
 +
@@ -705,8 +705,6 @@
 +    if( vID == NULL || layer == NULL )
 +        return false;
 +
-+    VRML_COLOR* color = &colors[vID->colorIndex];
-+
 +    file << "Transform {\n";
 +
 +    if( compact && !vID->objectName.empty() )
@@ -718,28 +716,12 @@
 +        {
 +            file << -vID->dZ << "\n";
 +
-+            double tsin, tcos, tx, ty;
-+
-+            // beware of  -90.001 < angle < 89.999 and 269.999 < angle < 270.001
-+            double diff = vID->dA + M_PI2;
-+
-+            if( diff < 1.7e-5 && diff > -1.7e-5 )
-+                vID->dA += 3.4e-5;
-+
-+            diff = vID->dA - ( M_PI2 + M_PI );
-+
-+            if( diff < 1.7e-5 && diff > -1.7e-5 )
-+                vID->dA += 3.4e-5;
++            double tx, ty;
 +
 +            // calculate the rotation axis and angle
++            tx = cos( M_PI2 - vID->dA / 2.0 );
++            ty = sin( M_PI2 - vID->dA / 2.0 );
 +
-+            tcos = cos( vID->dA );
-+            tsin = sin( vID->dA );
-+
-+            tx = 1.0 - tcos + tsin;
-+            ty = 1.0 + tcos + tsin;
-+
-+            // note: ideally this should be normalized
 +            file << "rotation " << setprecision( precision );
 +            file << tx << " " << ty << " 0 ";
 +            file << setprecision(5) << M_PI << "\n";
@@ -761,7 +743,19 @@
 +        }
 +
 +        file << "DEF " << vID->objectName << " Transform {\n";
++
++        if( !plane && top_z <= bottom_z )
++        {
++            // the height specification is faulty; make the component
++            // a bright red to highlight it
++            vID->colorIndex = 1;
++            // we don't know the scale, but 5 units is huge in most situations
++            top_z = bottom_z + 5.0;
++        }
++
 +    }
++
++    VRML_COLOR* color = &colors[vID->colorIndex];
 +
 +    vID->used = true;
 +
@@ -795,9 +789,21 @@
 +
 +    // Coordinates (vertices)
 +    if( plane )
-+        layer->WriteVertices( top_z, file, precision );
++    {
++        if( ! layer->WriteVertices( top_z, file, precision ) )
++        {
++            cerr << "* errors writing planar vertices to " << vID->objectName << "\n";
++            cerr << "** " << layer->GetError() << "\n";
++        }
++    }
 +    else
-+        layer->Write3DVertices( top_z, bottom_z, file, precision );
++    {
++        if( ! layer->Write3DVertices( top_z, bottom_z, file, precision ) )
++        {
++            cerr << "* errors writing 3D vertices to " << vID->objectName << "\n";
++            cerr << "** " << layer->GetError() << "\n";
++        }
++    }
 +
 +    file << "\n";
 +
@@ -927,13 +933,12 @@
 +    vpcb.SetArcParams( tI, tMin * scale, tMax * scale );
 +
 +    // Add the component outlines
-+    std::map< std::string, IDF3_COMPONENT* >* comp = &board.GetComponents();
-+    std::map< std::string, IDF3_COMPONENT* >::iterator sc = comp->begin();
-+    std::map< std::string, IDF3_COMPONENT* >::iterator ec = comp->end();
++    const std::map< std::string, IDF3_COMPONENT* >*const comp = board.GetComponents();
++    std::map< std::string, IDF3_COMPONENT* >::const_iterator sc = comp->begin();
++    std::map< std::string, IDF3_COMPONENT* >::const_iterator ec = comp->end();
 +
-+    std::list< IDF3_COMP_OUTLINE_DATA* >* dp;
-+    std::list< IDF3_COMP_OUTLINE_DATA* >::iterator so;
-+    std::list< IDF3_COMP_OUTLINE_DATA* >::iterator eo;
++    std::list< IDF3_COMP_OUTLINE_DATA* >::const_iterator so;
++    std::list< IDF3_COMP_OUTLINE_DATA* >::const_iterator eo;
 +
 +    double vX, vY, vA;
 +    double tX, tY, tZ, tA;
@@ -946,7 +951,6 @@
 +
 +    while( sc != ec )
 +    {
-+        dp = &sc->second->GetOutlinesData();
 +        sc->second->GetPosition( vX, vY, vA, lyr );
 +
 +        if( lyr == IDF3::LYR_BOTTOM )
@@ -954,8 +958,8 @@
 +        else
 +            bottom = false;
 +
-+        so = dp->begin();
-+        eo = dp->end();
++        so = sc->second->GetOutlinesData()->begin();
++        eo = sc->second->GetOutlinesData()->end();
 +
 +        while( so != eo )
 +        {
@@ -1018,6 +1022,7 @@
 +
 +            vcp = GetColor( cmap, cidx, ((IDF3_COMP_OUTLINE*)((*so)->GetOutline()))->GetUID() );
 +            vcp->bottom = bottom;
++
 +            WriteTriangles( file, vcp, &vpcb, false,
 +                            false, top, bot, board.GetUserPrecision(), compact );
 +
@@ -1053,6 +1058,8 @@
 +        std::ostringstream ostr;
 +        ostr << "OBJECTn" << refnum++;
 +        id->objectName = ostr.str();
++
++        cout << "* " << ostr.str() << " = '" << uid << "'\n";
 +
 +        cmap.insert( std::pair<std::string, VRML_IDS*>(uid, id) );
 +
@@ -4064,8 +4071,8 @@
 
 === added file 'utils/idftools/idf_outlines.cpp'
 --- utils/idftools/idf_outlines.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_outlines.cpp	2014-05-22 11:30:22 +0000
-@@ -0,0 +1,2613 @@
++++ utils/idftools/idf_outlines.cpp	2014-05-23 06:20:05 +0000
+@@ -0,0 +1,2615 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -5162,12 +5169,12 @@
 +    return comments.size();
 +}
 +
-+const std::list< std::string >* BOARD_OUTLINE::GetComments( void )
++std::list< std::string >* BOARD_OUTLINE::GetComments( void )
 +{
 +    return &comments;
 +}
 +
-+const std::string *const BOARD_OUTLINE::GetComment( size_t aIndex )
++const std::string* BOARD_OUTLINE::GetComment( size_t aIndex )
 +{
 +    if( aIndex >= comments.size() )
 +        return NULL;
@@ -5703,9 +5710,10 @@
 +            break;
 +
 +        default:
++            // XXX - throw
 +            ERROR << "invalid layer (" << aSide << "): must be one of TOP/BOTTOM/BOTH\n";
 +            side = LYR_INVALID;
-+            return false;
++            return;
 +            break;
 +    }
 +
@@ -6001,12 +6009,13 @@
 +            break;
 +
 +        default:
++            // XXX throw
 +            ERROR << "invalid side (" << aSide << "); must be one of TOP/BOTTOM/BOTH\n";
-+            return false;
++            return;
 +            break;
 +    }
 +
-+    return true;
++    return;
 +}
 +
 +IDF3::IDF_LAYER GROUP_OUTLINE::GetSide( void )
@@ -6534,11 +6543,11 @@
 +        default:
 +            // XXX - throw
 +            ERROR << "invalid component class (must be ELECTRICAL or MECHANICAL)\n";
-+            return false;
++            return;
 +            break;
 +    }
 +
-+    return false;
++    return;
 +}
 +
 +IDF3::COMP_TYPE IDF3_COMP_OUTLINE::GetComponentClass( void )
@@ -6682,7 +6691,7 @@
 
 === added file 'utils/idftools/idf_outlines.h'
 --- utils/idftools/idf_outlines.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_outlines.h	2014-05-22 11:36:41 +0000
++++ utils/idftools/idf_outlines.h	2014-05-23 06:20:00 +0000
 @@ -0,0 +1,754 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
@@ -6994,14 +7003,14 @@
 +     * Function GetComments
 +     * returns a pointer to the internal list of comments
 +     */
-+    const std::list< std::string >* GetComments( void );
++    std::list< std::string >* GetComments( void );
 +
 +    /**
 +     * Function GetComment
 +     * returns the string representing the indexed comment or
 +     * NULL if the index is out of bounds
 +     */
-+    const std::string *const GetComment( size_t aIndex );
++    const std::string* GetComment( size_t aIndex );
 +
 +    /**
 +     * Function DeleteComment
@@ -7442,8 +7451,8 @@
 
 === added file 'utils/idftools/idf_parser.cpp'
 --- utils/idftools/idf_parser.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.cpp	2014-05-22 10:36:15 +0000
-@@ -0,0 +1,3819 @@
++++ utils/idftools/idf_parser.cpp	2014-05-23 06:18:54 +0000
+@@ -0,0 +1,3824 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -8232,6 +8241,8 @@
 +    if( drills.empty() )
 +        return false;
 +
++    // XXX - throw on ownership violation
++
 +    bool val = false;
 +
 +    list< IDF_DRILL_DATA* >::iterator itS = drills.begin();
@@ -8259,6 +8270,8 @@
 +    if( drills.empty() )
 +        return false;
 +
++    // XXX - throw on ownership violation
++
 +    list< IDF_DRILL_DATA* >::iterator itS = drills.begin();
 +    list< IDF_DRILL_DATA* >::iterator itE = drills.end();
 +
@@ -8276,9 +8289,9 @@
 +    return false;
 +}
 +
-+std::list< IDF_DRILL_DATA* >& IDF3_COMPONENT::GetDrills( void )
++const std::list< IDF_DRILL_DATA* >*const IDF3_COMPONENT::GetDrills( void )
 +{
-+    return drills;
++    return &drills;
 +}
 +
 +bool IDF3_COMPONENT::AddOutlineData( IDF3_COMP_OUTLINE_DATA* aComponentOutline )
@@ -8344,9 +8357,9 @@
 +    return components.size();
 +}
 +
-+std::list< IDF3_COMP_OUTLINE_DATA* >& IDF3_COMPONENT::GetOutlinesData( void )
++const std::list< IDF3_COMP_OUTLINE_DATA* >*const IDF3_COMPONENT::GetOutlinesData( void )
 +{
-+    return components;
++    return &components;
 +}
 +
 +bool IDF3_COMPONENT::GetPosition( double& aXpos, double& aYpos, double& aAngle,
@@ -8400,13 +8413,14 @@
 +}
 +
 +
-+bool IDF3_COMPONENT::SetPlacement( IDF3::IDF_PLACEMENT aPlacementValue )
++void IDF3_COMPONENT::SetPlacement( IDF3::IDF_PLACEMENT aPlacementValue )
 +{
-+    if( aPlacementValue == PS_INVALID )
-+        return false;
++    // XXX - throw on ownership violation or invalid placement value
++    if( aPlacementValue < PS_UNPLACED || aPlacementValue >= PS_INVALID )
++        return;
 +
 +    placement = aPlacementValue;
-+    return true;
++    return;
 +}
 +
 +bool IDF3_COMPONENT::WriteDrillData( std::ofstream& aBoardFile )
@@ -10878,9 +10892,9 @@
 +}
 +
 +
-+std::map< std::string, IDF3_COMPONENT* >& IDF3_BOARD::GetComponents( void )
++std::map< std::string, IDF3_COMPONENT* >*const IDF3_BOARD::GetComponents( void )
 +{
-+    return components;
++    return &components;
 +}
 +
 +
@@ -11266,8 +11280,8 @@
 
 === added file 'utils/idftools/idf_parser.h'
 --- utils/idftools/idf_parser.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.h	2014-05-22 11:19:17 +0000
-@@ -0,0 +1,483 @@
++++ utils/idftools/idf_parser.h	2014-05-23 06:18:45 +0000
+@@ -0,0 +1,614 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -11290,9 +11304,6 @@
 + * or you may write to the Free Software Foundation, Inc.,
 + * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
 + */
-+
-+// NOTE: XXX: aim to remove all dependencies on KiCad routines; this will
-+// make the IDF framework usable in other unrelated projects.
 +
 +// NOTE:
 +// 1. Due to the complexity of objects and the risk of accumulated
@@ -11527,38 +11538,172 @@
 +     */
 +    const std::string& GetRefDes( void );
 +
-+    // qwerty
++    /**
++     * Function AddDrill
++     * adds a drill entry to the component and returns its pointer
++     *
++     * @param aDia diameter of the drill (mm)
++     * @param aXpos X position of the drill (mm)
++     * @param aYpos Y position of the drill (mm)
++     * @param aPlating plating type (PTH, NPTH)
++     * @param aHoleType hole class (PIN, VIA, MTG, TOOL, etc)
++     * @param aOwner owning CAD system (ECAD, MCAD, UNOWNED)
++     *
++     * @return pointer: a pointer to the newly created drill entry or NULL
++     */
 +    IDF_DRILL_DATA* AddDrill( double aDia, double aXpos, double aYpos,
 +                              IDF3::KEY_PLATING aPlating,
 +                              const std::string aHoleType,
 +                              IDF3::KEY_OWNER aOwner );
 +
++    /**
++     * Function AddDrill
++     * adds the given drill entry to the component and returns the pointer
++     * to indicate success. A return value of NULL indicates that the item
++     * was not added and it is the user's responsibility to delete the
++     * object if necessary.
++     *
++     * @param aDrilledHole pointer to a drill entry
++     *
++     * @return pointer: aDrilledHole if the function succeeds, otherwise NULL
++     */
 +    IDF_DRILL_DATA* AddDrill( IDF_DRILL_DATA* aDrilledHole );
 +
++    /**
++     * Function DelDrill( double aDia, double aXpos, double aYpos )
++     * deletes a drill entry based on its size and location. This operation is
++     * subject to IDF ownership rules.
++     *
++     * @param aDia diameter (mm) of the drilled hole to be deleted
++     * @param aXpos X position (mm) of the hole to be deleted
++     * @param aYpos X position (mm) of the hole to be deleted
++     *
++     * @return bool: true if a drill was found and deleted, otherwise false.
++     * If an ownership violation occurs an exception is thrown.
++     */
 +    bool DelDrill( double aDia, double aXpos, double aYpos );
++
++    /**
++     * Function DelDrill( IDF_DRILL_DATA* aDrill )
++     * deletes a drill entry based on pointer. This operation is
++     * subject to IDF ownership rules.
++     *
++     * @param aDrill the pointer associated with the drill entry to be deleted
++     *
++     * @return bool: true if a drill was found and deleted, otherwise false.
++     * If an ownership violation occurs an exception is thrown.
++     */
 +    bool DelDrill( IDF_DRILL_DATA* aDrill );
-+    std::list< IDF_DRILL_DATA* >& GetDrills( void );
 +
++    /**
++     * Function GetDrills
++     * returns a pointer to the internal list of drills. To avoid IDF
++     * violations, the user should not alter these entries.
++     */
++    const std::list< IDF_DRILL_DATA* >*const GetDrills( void );
++
++    /**
++     * Function AddOutlineData
++     * adds the given component outline data to this component
++     *
++     * @param aComponentOutline is a pointer to the outline data to be added
++     *
++     * @return true if the operation succeedes, otherwise false
++     */
 +    bool AddOutlineData( IDF3_COMP_OUTLINE_DATA* aComponentOutline );
-+    bool DeleteOutlineData( IDF3_COMP_OUTLINE_DATA* aComponentOutline );
-+    bool DeleteOutlineData( size_t aIndex );
-+    size_t GetOutlinesSize( void );
-+    std::list< IDF3_COMP_OUTLINE_DATA* >& GetOutlinesData( void );
 +
-+    // return true if position was set; otherwise false
++    /**
++     * Function DeleteOutlineData( IDF3_COMP_OUTLINE_DATA* aComponentOutline )
++     * removes outline data based on the pointer provided.
++     *
++     * @param aComponentOutline is a pointer to be deleted from the internal list
++     *
++     * @return bool: true if the data was found and deleted, otherwise false
++     */
++    bool DeleteOutlineData( IDF3_COMP_OUTLINE_DATA* aComponentOutline );
++
++    /**
++     * Function DeleteOutlineData( size_t aIndex )
++     * removes outline data based on the provided index.
++     *
++     * @param aIndex is an index to the internal outline list
++     *
++     * @return bool: true if the data was deleted, false if the
++     * index was out of bounds.
++     */
++    bool DeleteOutlineData( size_t aIndex );
++
++    /**
++     * Function GetOutlineSize
++     * returns the number of outlines in the internal list
++     */
++    size_t GetOutlinesSize( void );
++
++
++    /**
++     * Function GetOutlinesData
++     * returns a pointer to the internal list of outline data
++     */
++    const std::list< IDF3_COMP_OUTLINE_DATA* >*const GetOutlinesData( void );
++
++    /**
++     * Function GetPosition
++     * retrieves the internal position parameters and returns true if the
++     * position was previously set, otherwise false.
++     */
 +    bool GetPosition( double& aXpos, double& aYpos, double& aAngle, IDF3::IDF_LAYER& aLayer );
 +
-+    // return true if the position was set
++    // NOTE: it may be possible to extend this so that internal drills and outlines
++    // are moved when the component is moved. However there is always a danger of
++    // position creep due to the relative position updates.
++    /**
++     * Function SetPosition
++     * sets the internal position parameters and returns true if the
++     * position was set, false if the position was previously set. This object
++     * does not allow modification of the position once it is set since this may
++     * adversely affect the relationship with its internal objects.
++     *
++     * @param aXpos is the X position (mm) of the component
++     * @param aYpos is the Y position (mm) of the component
++     * @param aAngle is the rotation of the component (degrees)
++     * @param aLayer is the layer on which the component is places (TOP, BOTTOM)
++     *
++     * @return bool: true if the position was set, otherwise false
++     */
 +    bool SetPosition( double aXpos, double aYpos, double aAngle, IDF3::IDF_LAYER aLayer );
-+    //          Sets the absolute position; if a position
-+    //          was previously set, all contained objects
-+    //          are moved. If UNPLACED, set to PLACED.
-+    //          CAD may vary PLACEMENT (almost) at will.
 +
++    /**
++     * Function GetPlacement
++     * returns the IDF placement value of this component (UNPLACED, PLACED, ECAD, MCAD)
++     */
 +    IDF3::IDF_PLACEMENT GetPlacement( void );
-+    bool SetPlacement( IDF3::IDF_PLACEMENT aPlacementValue );
 +
++    /**
++     * Function SetPlacement
++     * sets the placement value of the component subject to ownership rules.
++     * An exception is thrown if aPlacementValue is invalid or an ownership
++     * violation occurs.
++     */
++    void SetPlacement( IDF3::IDF_PLACEMENT aPlacementValue );
++
++    /**
++     * Function WriteDrillData
++     * writes the internal drill data to an IDFv3 .DRILLED_HOLES section
++     *
++     * @param aBoardFile is an IDFv3 file opened for writing
++     *
++     * @return bool: true if the operation succeeded, otherwise false
++     */
 +    bool WriteDrillData( std::ofstream& aBoardFile );
++
++    /**
++     * Function WritePlaceData
++     * writes the component placement data to an IDFv3 .PLACEMENT section
++     *
++     * @param aBoardFile is an IDFv3 file opened for writing
++     *
++     * @return bool: true if the operation succeeded, otherwise false
++     */
 +    bool WritePlaceData( std::ofstream& aBoardFile );
 +};
 +
@@ -11729,7 +11874,7 @@
 +    bool DelComponent( IDF3_COMPONENT* aComponent );
 +    bool DelComponent( size_t aIndex );
 +    size_t GetComponentsSize( void );
-+    std::map< std::string, IDF3_COMPONENT* >& GetComponents( void );
++    std::map< std::string, IDF3_COMPONENT* >*const GetComponents( void );
 +    IDF3_COMPONENT* FindComponent( std::string aRefDes );
 +
 +    // returns a pointer to a component outline object or NULL
