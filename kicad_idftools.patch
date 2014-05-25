@@ -1,225 +1,59 @@
-=== modified file 'pcbnew/exporters/idf_common.cpp'
---- pcbnew/exporters/idf_common.cpp	2014-02-05 09:27:21 +0000
-+++ pcbnew/exporters/idf_common.cpp	2014-02-22 02:04:14 +0000
-@@ -451,6 +451,85 @@
- }
+=== modified file 'utils/idftools/CMakeLists.txt'
+--- utils/idftools/CMakeLists.txt	2014-02-21 10:05:28 +0000
++++ utils/idftools/CMakeLists.txt	2014-05-24 23:50:45 +0000
+@@ -1,29 +1,25 @@
+ include_directories(
+-    "${CMAKE_SOURCE_DIR}/include"
+     "${CMAKE_SOURCE_DIR}/lib_dxf"
+-    "${CMAKE_SOURCE_DIR}/pcbnew/exporters"
+     "${CMAKE_SOURCE_DIR}/utils/idftools"
+   )
  
+ link_directories(
+     "${CMAKE_BINARY_DIR}/lib_dxf"
+-)
++  )
++
++add_library( idf3 STATIC
++    idf_helpers.cpp idf_common.cpp idf_outlines.cpp
++    idf_parser.cpp vrml_layer.cpp )
  
-+bool IDF_OUTLINE::IsCCW( void )
-+{
-+    // note: when outlines are not valid, 'false' is returned
-+    switch( outline.size() )
-+    {
-+    case 0:
-+        // no outline
-+        return false;
-+        break;
-+
-+    case 1:
-+        // circles are always reported as CCW
-+        if( outline.front()->IsCircle() )
-+            return true;
-+        else
-+            return false;
-+        break;
-+
-+    case 2:
-+        // we may have a closed outline consisting of:
-+        // 1. arc and line, winding depends on the arc
-+        // 2. 2 arcs, winding depends on larger arc
-+        {
-+            double a1 = outline.front()->angle;
-+            double a2 = outline.back()->angle;
-+
-+            if( ( a1 < -MIN_ANG || a1 > MIN_ANG )
-+                && ( a2 < -MIN_ANG || a2 > MIN_ANG ) )
-+            {
-+                // we have 2 arcs
-+                if( abs( a1 ) >= abs( a2 ) )
-+                {
-+                    // winding depends on a1
-+                    if( a1 < 0.0 )
-+                        return false;
-+                    else
-+                        return true;
-+                }
-+                else
-+                {
-+                    if( a2 < 0.0 )
-+                        return false;
-+                    else
-+                        return true;
-+                }
-+            }
-+
-+            // we may have a line + arc (or 2 lines)
-+            if( a1 < -MIN_ANG )
-+                return false;
-+
-+            if( a1 > MIN_ANG )
-+                return true;
-+
-+            if( a2 < -MIN_ANG )
-+                return false;
-+
-+            if( a2 > MIN_ANG )
-+                return true;
-+
-+            // we have 2 lines (invalid outline)
-+            return false;
-+        }
-+        break;
-+
-+    default:
-+        break;
-+    }
-+
-+    double winding = dir + ( outline.front()->startPoint.x - outline.back()->endPoint.x )
-+    * ( outline.front()->startPoint.y + outline.back()->endPoint.y );
-+
-+    if( winding > 0.0 )
-+        return false;
-+
-+    return true;
-+}
-+
-+
- void IDF_OUTLINE::push( IDF_SEGMENT* item )
- {
-     if( !outline.empty() )
-
-=== modified file 'pcbnew/exporters/idf_common.h'
---- pcbnew/exporters/idf_common.h	2014-02-05 09:27:21 +0000
-+++ pcbnew/exporters/idf_common.h	2014-02-22 00:48:07 +0000
-@@ -227,13 +227,7 @@
-     ~IDF_OUTLINE() { Clear(); }
- 
-     // returns true if the current list of points represents a counterclockwise winding
--    bool IsCCW( void )
--    {
--        if( dir > 0.0 )
--            return false;
+ add_executable( idfcyl idf_cylinder.cpp )
 -
--        return true;
--    }
-+    bool IsCCW( void );
- 
-     // clears the internal list of outline segments
-     void Clear( void )
-
-=== added file 'utils/idftools/build.sh'
---- utils/idftools/build.sh	1970-01-01 00:00:00 +0000
-+++ utils/idftools/build.sh	2014-05-23 06:22:56 +0000
-@@ -0,0 +1,99 @@
-+#! /bin/bash
-+#g++ -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp
+ add_executable( idfrect idf_rect.cpp )
+-
+-add_executable( dxf2idf dxf2idfmain.cpp dxf2idf.cpp
+-    "${CMAKE_SOURCE_DIR}/pcbnew/exporters/idf_common.cpp"
+-    "${CMAKE_SOURCE_DIR}/common/richio.cpp"
+-  )
+-
+-add_dependencies( idfcyl lib-dependencies )
+-add_dependencies( idfrect lib-dependencies )
+-add_dependencies( dxf2idf lib-dependencies )
+-
+-target_link_libraries( dxf2idf lib_dxf ${wxWidgets_LIBRARIES} )
+-
+-install( TARGETS idfcyl idfrect dxf2idf
++add_executable( dxf2idf dxf2idfmain.cpp dxf2idf.cpp )
++add_executable( idf2vrml idf2vrml.cpp )
 +
-+#g++ -Wall -I . -I ../../include -I ../../build `wx-config --cxxflags` idf_parser.cpp idf_common.cpp idf2vrml.cpp \
-+#  ../../common/richio.cpp `wx-config --libs` -o idf2vrml
-+
-+# set these flags to (re)build each unit
-+IDF_HELPERS=false
-+IDF_OUTLINES=false
-+IDF_PARSER=false
-+IDF_COMMON=false
-+VRML_BOARD=false
-+MAIN=true
-+APP=true
++target_link_libraries( dxf2idf lib_dxf idf3 ${wxWidgets_LIBRARIES} )
++target_link_libraries( idf2vrml idf3 GLU  ${wxWidgets_LIBRARIES} )
 +
 +
-+if ( ${IDF_HELPERS} )
-+    then
-+    if ! ( g++ -Wall -I . `wx-config --cxxflags` -c idf_helpers.cpp )
-+        then
-+        echo -e "\E[31mFAILED TO COMPILE: idf_helpers.cpp\E[0m"
-+        exit 1
-+    else
-+        echo -e "\E[34midf_helpers.cpp: OK\E[0m"
-+    fi
-+fi
-+
-+
-+if ( ${IDF_OUTLINES} )
-+    then
-+    if ! ( g++ -Wall -I . `wx-config --cxxflags` -c idf_outlines.cpp )
-+        then
-+        echo -e "\E[31mFAILED TO COMPILE: idf_outlines.cpp\E[0m"
-+        exit 1
-+    else
-+        echo -e "\E[34midf_outlines.cpp: OK\E[0m"
-+    fi
-+fi
-+
-+
-+if ( ${IDF_PARSER} )
-+    then
-+    if ! ( g++ -g -Wall -I . `wx-config --cxxflags` -c idf_parser.cpp )
-+        then
-+        echo -e "\E[31mFAILED TO COMPILE: idf_parser.cpp\E[0m"
-+        exit 1
-+    else
-+        echo -e "\E[34midf_parser.cpp: OK\E[0m"
-+    fi
-+fi
-+
-+
-+if ( ${IDF_COMMON} )
-+    then
-+    if ! ( g++ -Wall -I . `wx-config --cxxflags` -c idf_common.cpp )
-+        then
-+        echo -e "\E[31mFAILED TO COMPILE: idf_common.cpp\E[0m"
-+        exit 1
-+    else
-+        echo -e "\E[34midf_common.cpp: OK\E[0m"
-+    fi
-+fi
-+
-+
-+if ( ${VRML_BOARD} )
-+    then
-+    if ! ( g++ -Wall -I . `wx-config --cxxflags` -c vrml_board.cpp )
-+        then
-+        echo -e "\E[31mFAILED TO COMPILE: vrml_board.cpp\E[0m"
-+        exit 1
-+    else
-+        echo -e "\E[34mvrml_board.cpp: OK\E[0m"
-+    fi
-+fi
-+
-+
-+if ( ${MAIN} )
-+    then
-+    if ! ( g++ -Wall -I . `wx-config --cxxflags` -c idf2vrml.cpp )
-+        then
-+        echo -e "\E[31mFAILED TO COMPILE: idf2vrml.cpp\E[0m"
-+        exit 1
-+    else
-+        echo -e "\E[34midf2vrml.cpp: OK\E[0m"
-+    fi
-+fi
-+
-+
-+if ( ${APP} )
-+    then
-+    if ! ( g++ -lGLU idf_parser.o idf_common.o idf_helpers.o idf_outlines.o vrml_board.o \
-+            idf2vrml.o build_version.o `wx-config --libs` -o idf2vrml )
-+        then
-+        echo -e "\E[31mFAILED TO LINK: idf2vrml\E[0m"
-+        exit 1
-+    else
-+        echo -e "\E[34midf2vrml: Build Completed\E[0m"
-+    fi
-+fi
++install( TARGETS idfcyl idfrect dxf2idf idf2vrml
+     DESTINATION ${KICAD_BIN}
+     COMPONENT binary )
 
 === modified file 'utils/idftools/dxf2idfmain.cpp'
 --- utils/idftools/dxf2idfmain.cpp	2014-02-05 09:27:21 +0000
-+++ utils/idftools/dxf2idfmain.cpp	2014-05-09 04:23:18 +0000
++++ utils/idftools/dxf2idfmain.cpp	2014-05-24 00:21:27 +0000
 @@ -123,7 +123,8 @@
          tstr.clear();
          tstr.str( line );
  
 -        if( (tstr >> height ) && height > 0.001 )
-+        tstr >> height
++        tstr >> height;
 +        if( !tstr.fail() && height > 0.001 )
              ok = true;
      }
@@ -227,7 +61,7 @@
 
 === added file 'utils/idftools/idf2vrml.cpp'
 --- utils/idftools/idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf2vrml.cpp	2014-05-23 07:23:24 +0000
++++ utils/idftools/idf2vrml.cpp	2014-05-24 23:35:48 +0000
 @@ -0,0 +1,842 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
@@ -282,7 +116,7 @@
 +#include <idf_helpers.h>
 +#include <idf_common.h>
 +#include <idf_parser.h>
-+#include <vrml_board.h>
++#include <vrml_layer.h>
 +
 +#ifndef MIN_ANG
 +#define MIN_ANG 0.01
@@ -1074,7 +908,7 @@
 
 === added file 'utils/idftools/idf_common.cpp'
 --- utils/idftools/idf_common.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_common.cpp	2014-05-22 07:08:47 +0000
++++ utils/idftools/idf_common.cpp	2014-05-24 02:48:33 +0000
 @@ -0,0 +1,1376 @@
 +/**
 + * file: idf_common.cpp
@@ -1180,7 +1014,7 @@
 +    // RECORD 2: X, Y, text Height, text Length, "TEXT"
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && !aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading board notes\n";
@@ -1513,7 +1347,7 @@
 +    // RECORD 2: DIA, X, Y, Plating Style, REFDES, HOLE TYPE, HOLE OWNER
 +    while( !FetchIDFLine( aBoardFile, iline, isComment, pos ) && aBoardFile.good() );
 +
-+    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && !aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR;
 +        cerr << "problems reading board drilled holes\n";
@@ -3244,9 +3078,173 @@
              if( lead < wireDia )
                  cout << "* WARNING: lead length must be >= wireDia\n";
 
-=== added file 'utils/idftools/idf_example.emn'
---- utils/idftools/idf_example.emn	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_example.emn	2014-05-20 04:50:47 +0000
+=== added directory 'utils/idftools/idf_examples'
+=== added file 'utils/idftools/idf_examples/Arduino_MEGA_2560-Rev3.emn'
+--- utils/idftools/idf_examples/Arduino_MEGA_2560-Rev3.emn	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/Arduino_MEGA_2560-Rev3.emn	2014-05-24 22:51:42 +0000
+@@ -0,0 +1,149 @@
++.HEADER
++BOARD_FILE 3.0 "Created by KiCad (2014-01-21 BZR 4629)-product" 2014/01/23.09:19:46 1
++"Arduino_MEGA_2560-Rev3.kicad_pcb" MM
++.END_HEADER
++
++.BOARD_OUTLINE ECAD
++1.60000
++0 246.20220 -25.67000 0
++0 247.20220 -26.67000 0
++0 344.26220 -26.67000 0
++0 345.26220 -25.67000 0
++0 345.26220 -25.40000 0
++0 347.80220 -22.86000 0
++0 347.80220 11.43000 0
++0 345.26220 13.97000 0
++0 345.26220 24.13000 0
++0 342.72220 26.67000 0
++0 247.20220 26.67000 0
++0 246.20220 25.67000 0
++0 246.20220 -25.67000 0
++.END_BOARD_OUTLINE
++
++.DRILLED_HOLES
++3.200 342.72220 -24.13000 NPTH "@HOLE0" MTG ECAD
++3.200 261.44220 24.13000 NPTH "@HOLE1" MTG ECAD
++3.200 336.37220 24.13000 NPTH "@HOLE2" MTG ECAD
++3.200 260.17220 -24.13000 NPTH "@HOLE3" MTG ECAD
++3.200 312.24220 8.89000 NPTH "@HOLE4" MTG ECAD
++3.200 312.24220 -19.05000 NPTH "@HOLE5" MTG ECAD
++0.950 309.82920 3.81000 PTH "ICSP" PIN ECAD
++0.950 312.36920 3.81000 PTH "ICSP" PIN ECAD
++0.950 309.82920 1.27000 PTH "ICSP" PIN ECAD
++0.950 312.36920 1.27000 PTH "ICSP" PIN ECAD
++0.950 309.82920 -1.27000 PTH "ICSP" PIN ECAD
++0.950 312.36920 -1.27000 PTH "ICSP" PIN ECAD
++0.850 309.70220 24.13000 PTH "PWML" PIN ECAD
++0.850 307.16220 24.13000 PTH "PWML" PIN ECAD
++0.850 304.62220 24.13000 PTH "PWML" PIN ECAD
++0.850 302.08220 24.13000 PTH "PWML" PIN ECAD
++0.850 299.54220 24.13000 PTH "PWML" PIN ECAD
++0.850 297.00220 24.13000 PTH "PWML" PIN ECAD
++0.850 294.46220 24.13000 PTH "PWML" PIN ECAD
++0.850 291.92220 24.13000 PTH "PWML" PIN ECAD
++1.400 254.88900 -23.36800 PTH "X1" PIN ECAD
++1.400 257.88620 -18.36420 PTH "X1" PIN ECAD
++1.400 251.89180 -18.36420 PTH "X1" PIN ECAD
++1.400 255.65100 -23.36800 PTH "X1" PIN ECAD
++1.400 254.12700 -23.36800 PTH "X1" PIN ECAD
++1.400 251.89180 -19.12620 PTH "X1" PIN ECAD
++1.400 251.89180 -17.60220 PTH "X1" PIN ECAD
++1.400 257.88620 -19.12620 PTH "X1" PIN ECAD
++1.400 257.88620 -17.60220 PTH "X1" PIN ECAD
++0.850 297.00220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 299.54220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 302.08220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 304.62220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 307.16220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 309.70220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 312.24220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 314.78220 -24.13000 PTH "ADCL" PIN ECAD
++0.850 332.56220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 330.02220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 327.48220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 324.94220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 322.40220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 319.86220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 317.32220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 314.78220 24.13000 PTH "COMMUNICATION" PIN ECAD
++0.850 319.86220 -24.13000 PTH "ADCH" PIN ECAD
++0.850 322.40220 -24.13000 PTH "ADCH" PIN ECAD
++0.850 324.94220 -24.13000 PTH "ADCH" PIN ECAD
++0.850 327.48220 -24.13000 PTH "ADCH" PIN ECAD
++0.850 330.02220 -24.13000 PTH "ADCH" PIN ECAD
++0.850 332.56220 -24.13000 PTH "ADCH" PIN ECAD
++0.850 335.10220 -24.13000 PTH "ADCH" PIN ECAD
++0.850 337.64220 -24.13000 PTH "ADCH" PIN ECAD
++0.950 254.72220 10.18000 PTH "X2" PIN ECAD
++0.950 254.72220 12.68000 PTH "X2" PIN ECAD
++0.950 252.72220 12.68000 PTH "X2" PIN ECAD
++0.950 252.72220 10.18000 PTH "X2" PIN ECAD
++2.200 250.01220 17.43000 PTH "X2" PIN ECAD
++2.200 250.01220 5.43000 PTH "X2" PIN ECAD
++0.950 267.03020 20.82800 PTH "ICSP1" PIN ECAD
++0.950 267.03020 18.28800 PTH "ICSP1" PIN ECAD
++0.950 264.49020 20.82800 PTH "ICSP1" PIN ECAD
++0.950 264.49020 18.28800 PTH "ICSP1" PIN ECAD
++0.950 261.95020 20.82800 PTH "ICSP1" PIN ECAD
++0.950 261.95020 18.28800 PTH "ICSP1" PIN ECAD
++0.850 267.15720 -0.63500 PTH "Y2" PIN ECAD
++0.850 262.07720 -0.63500 PTH "Y2" PIN ECAD
++0.950 267.03020 13.20800 PTH "JP5" PIN ECAD
++0.950 264.49020 13.20800 PTH "JP5" PIN ECAD
++0.950 267.03020 15.74800 PTH "JP5" PIN ECAD
++0.950 264.49020 15.74800 PTH "JP5" PIN ECAD
++0.950 340.18220 24.13000 PTH "XIO" PIN ECAD
++0.950 342.72220 24.13000 PTH "XIO" PIN ECAD
++0.950 340.18220 21.59000 PTH "XIO" PIN ECAD
++0.950 342.72220 21.59000 PTH "XIO" PIN ECAD
++0.950 340.18220 19.05000 PTH "XIO" PIN ECAD
++0.950 342.72220 19.05000 PTH "XIO" PIN ECAD
++0.950 340.18220 16.51000 PTH "XIO" PIN ECAD
++0.950 342.72220 16.51000 PTH "XIO" PIN ECAD
++0.950 340.18220 13.97000 PTH "XIO" PIN ECAD
++0.950 342.72220 13.97000 PTH "XIO" PIN ECAD
++0.950 340.18220 11.43000 PTH "XIO" PIN ECAD
++0.950 342.72220 11.43000 PTH "XIO" PIN ECAD
++0.950 340.18220 8.89000 PTH "XIO" PIN ECAD
++0.950 342.72220 8.89000 PTH "XIO" PIN ECAD
++0.950 340.18220 6.35000 PTH "XIO" PIN ECAD
++0.950 342.72220 6.35000 PTH "XIO" PIN ECAD
++0.950 340.18220 3.81000 PTH "XIO" PIN ECAD
++0.950 342.72220 3.81000 PTH "XIO" PIN ECAD
++0.950 340.18220 1.27000 PTH "XIO" PIN ECAD
++0.950 342.72220 1.27000 PTH "XIO" PIN ECAD
++0.950 340.18220 -1.27000 PTH "XIO" PIN ECAD
++0.950 342.72220 -1.27000 PTH "XIO" PIN ECAD
++0.950 340.18220 -3.81000 PTH "XIO" PIN ECAD
++0.950 342.72220 -3.81000 PTH "XIO" PIN ECAD
++0.950 340.18220 -6.35000 PTH "XIO" PIN ECAD
++0.950 342.72220 -6.35000 PTH "XIO" PIN ECAD
++0.950 340.18220 -8.89000 PTH "XIO" PIN ECAD
++0.950 342.72220 -8.89000 PTH "XIO" PIN ECAD
++0.950 340.18220 -11.43000 PTH "XIO" PIN ECAD
++0.950 342.72220 -11.43000 PTH "XIO" PIN ECAD
++0.950 340.18220 -13.97000 PTH "XIO" PIN ECAD
++0.950 342.72220 -13.97000 PTH "XIO" PIN ECAD
++0.950 340.18220 -16.51000 PTH "XIO" PIN ECAD
++0.950 342.72220 -16.51000 PTH "XIO" PIN ECAD
++0.950 340.18220 -19.05000 PTH "XIO" PIN ECAD
++0.950 342.72220 -19.05000 PTH "XIO" PIN ECAD
++0.850 264.99820 24.13000 PTH "JP6" PIN ECAD
++0.850 267.53820 24.13000 PTH "JP6" PIN ECAD
++0.850 270.07820 24.13000 PTH "JP6" PIN ECAD
++0.850 272.61820 24.13000 PTH "JP6" PIN ECAD
++0.850 275.15820 24.13000 PTH "JP6" PIN ECAD
++0.850 277.69820 24.13000 PTH "JP6" PIN ECAD
++0.850 280.23820 24.13000 PTH "JP6" PIN ECAD
++0.850 282.77820 24.13000 PTH "JP6" PIN ECAD
++0.850 285.31820 24.13000 PTH "JP6" PIN ECAD
++0.850 287.85820 24.13000 PTH "JP6" PIN ECAD
++0.850 274.14220 -24.13000 PTH "POWER" PIN ECAD
++0.850 276.68220 -24.13000 PTH "POWER" PIN ECAD
++0.850 279.22220 -24.13000 PTH "POWER" PIN ECAD
++0.850 281.76220 -24.13000 PTH "POWER" PIN ECAD
++0.850 284.30220 -24.13000 PTH "POWER" PIN ECAD
++0.850 286.84220 -24.13000 PTH "POWER" PIN ECAD
++0.850 289.38220 -24.13000 PTH "POWER" PIN ECAD
++0.850 291.92220 -24.13000 PTH "POWER" PIN ECAD
++.END_DRILLED_HOLES
+
+=== added file 'utils/idftools/idf_examples/Arduino_MEGA_2560-Rev3.emp'
+--- utils/idftools/idf_examples/Arduino_MEGA_2560-Rev3.emp	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/Arduino_MEGA_2560-Rev3.emp	2014-05-24 22:51:42 +0000
+@@ -0,0 +1,4 @@
++.HEADER
++LIBRARY_FILE 3.0 "Created by KiCad (2014-01-21 BZR 4629)-product" 2014/01/23.09:19:46 1
++.END_HEADER
++
+
+=== added file 'utils/idftools/idf_examples/idf_example.emn'
+--- utils/idftools/idf_examples/idf_example.emn	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/idf_example.emn	2014-05-24 06:33:30 +0000
 @@ -0,0 +1,269 @@
 +.HEADER
 +BOARD_FILE 3.0 "Sample File Generator" 10/22/96.16:02:44 1
@@ -3518,9 +3516,9 @@
 +2200.0 2500.0 0.0 270.0 TOP PLACED
 +.END_PLACEMENT
 
-=== added file 'utils/idftools/idf_example.emp'
---- utils/idftools/idf_example.emp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_example.emp	2014-05-16 07:16:25 +0000
+=== added file 'utils/idftools/idf_examples/idf_example.emp'
+--- utils/idftools/idf_examples/idf_example.emp	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/idf_example.emp	2014-05-24 06:33:30 +0000
 @@ -0,0 +1,69 @@
 +.HEADER
 +LIBRARY_file 3.0 "Sample File Generator" 10/22/96.16:41:37 1
@@ -3591,6 +3589,377 @@
 +0 240.0 240.0 0.0
 +0 -200.0 240.0 0.0
 +.END_ELECTRICAL
+
+=== added file 'utils/idftools/idf_examples/test_idf2.emn'
+--- utils/idftools/idf_examples/test_idf2.emn	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/test_idf2.emn	2014-05-24 22:43:42 +0000
+@@ -0,0 +1,71 @@
++.HEADER
++BOARD_FILE 3.0 "Created by KiCad (2014-01-25 BZR 4633)-product" 2014/02/01.15:09:15 1
++"test_idf2.kicad_pcb" MM
++.END_HEADER
++
++.BOARD_OUTLINE ECAD
++1.60000
++0 -86.00000 42.00000 0
++0 -86.00000 -42.00000 0
++0 86.00000 -42.00000 0
++0 86.00000 42.00000 0
++0 -86.00000 42.00000 0
++.END_BOARD_OUTLINE
++
++.DRILLED_HOLES
++0.800 -74.00000 16.00000 PTH BOARD PIN ECAD
++0.800 -74.00000 -28.00000 PTH BOARD PIN ECAD
++0.850 -55.75000 16.00000 PTH BOARD PIN ECAD
++0.850 -52.25000 16.00000 PTH BOARD PIN ECAD
++0.850 -35.75000 16.00000 PTH BOARD PIN ECAD
++0.850 -32.25000 16.00000 PTH BOARD PIN ECAD
++1.575 -57.17500 -28.00000 PTH BOARD PIN ECAD
++1.575 -50.82500 -28.00000 PTH BOARD PIN ECAD
++1.575 -37.17500 -28.00000 PTH BOARD PIN ECAD
++1.575 -30.82500 -28.00000 PTH BOARD PIN ECAD
++0.800 -14.00000 16.00000 PTH BOARD PIN ECAD
++0.800 -14.00000 -28.00000 PTH BOARD PIN ECAD
++0.800 6.00000 16.00000 PTH BOARD PIN ECAD
++0.800 6.00000 -28.00000 PTH BOARD PIN ECAD
++0.800 26.00000 16.00000 PTH BOARD PIN ECAD
++0.800 26.00000 -28.00000 PTH BOARD PIN ECAD
++0.800 46.00000 16.00000 PTH BOARD PIN ECAD
++0.800 46.00000 -28.00000 PTH BOARD PIN ECAD
++0.800 66.00000 16.00000 PTH BOARD PIN ECAD
++0.800 66.00000 -28.00000 PTH BOARD PIN ECAD
++.END_DRILLED_HOLES
++
++.PLACEMENT
++"CYLV_MM" "D5.000_H8.000_Z3.000" "NOREFDES_0"
++-74.000000 16.000000 0.000000 0.000 TOP ECAD
++"CYLV_IN" "D0.250_H0.250_Z0.127" "NOREFDES_1"
++-74.000000 -28.000000 0.000000 0.000 TOP ECAD
++"CYLV_MM_L" "D5.000_H8.000_Z3.000_WD0.800_P3.500" "NOREFDES_2"
++-54.000000 16.000000 0.000000 0.000 TOP ECAD
++"CYLV_MM_R" "D5.000_H8.000_Z3.000_WD0.800_P3.500" "NOREFDES_3"
++-34.000000 16.000000 0.000000 0.000 TOP ECAD
++"CYLV_IN_L" "D0.250_H0.250_Z0.127_WD0.062_P0.250" "NOREFDES_4"
++-54.000000 -28.000000 0.000000 0.000 TOP ECAD
++"CYLV_IN_R" "D0.250_H0.250_Z0.127_WD0.062_P0.250" "NOREFDES_5"
++-34.000000 -28.000000 0.000000 0.000 TOP ECAD
++"CYLH_MM_AXI" "D2.500_H4.000_Z0.500_WD0.600_P8.000" "NOREFDES_6"
++-14.000000 16.000000 0.000000 0.000 TOP ECAD
++"CYLH_IN_AXI" "D0.098_H0.157_Z0.020_WD0.024_P0.315" "NOREFDES_7"
++-14.000000 -28.000000 0.000000 0.000 TOP ECAD
++"CYLH_MM_RAD" "D5.000_H6.000_Z0.200_WD0.600_P2.500_L3.000" "NOREFDES_8"
++6.000000 16.000000 0.000000 0.000 TOP ECAD
++"CYLH_IN_RAD" "D0.197_H0.236_Z0.008_WD0.024_P0.098_L0.118" "NOREFDES_9"
++6.000000 -28.000000 0.000000 0.000 TOP ECAD
++"RECTMM" "W10.000_L10.000_H6.000_C0.000" "NOREFDES_10"
++26.000000 16.000000 0.000000 0.000 TOP ECAD
++"RECTIN" "W393_L393_H236_C0" "NOREFDES_11"
++26.000000 -28.000000 0.000000 0.000 TOP ECAD
++"RECTMM" "W10.000_L10.000_H2.000_C0.500" "NOREFDES_12"
++46.000000 16.000000 0.000000 0.000 TOP ECAD
++"RECTIN" "W393_L393_H78_C19" "NOREFDES_13"
++46.000000 -28.000000 0.000000 0.000 TOP ECAD
++"RECTLMM" "W10.000_L10.000_H12.000_D0.800_P6.000" "NOREFDES_14"
++66.000000 16.000000 0.000000 0.000 TOP ECAD
++"RECTLIN" "W393_L393_H472_D31_P236" "NOREFDES_15"
++66.000000 -28.000000 0.000000 0.000 TOP ECAD
++.END_PLACEMENT
+
+=== added file 'utils/idftools/idf_examples/test_idf2.emp'
+--- utils/idftools/idf_examples/test_idf2.emp	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/test_idf2.emp	2014-05-24 22:43:42 +0000
+@@ -0,0 +1,290 @@
++.HEADER
++LIBRARY_FILE 3.0 "Created by KiCad (2014-01-25 BZR 4633)-product" 2014/02/01.15:09:15 1
++.END_HEADER
++
++# cylindrical outline, vertical, no pins
++# file: "cylvmm_0_D5_L8_Z3.idf"
++# dia: 5.000 mm
++# length: 8.000 mm
++# extra height: 3.000 mm
++.ELECTRICAL
++"CYLV_MM" "D5.000_H8.000_Z3.000" MM 11.000
++0 0 0 0
++0 5.000 0 360
++.END_ELECTRICAL
++
++# cylindrical outline, vertical, no pins
++# file: "cylvin_0_D0.25_L0.25_Z0.127.idf"
++# dia: 250 THOU
++# length: 250 THOU
++# extra height: 127 THOU
++.ELECTRICAL
++"CYLV_IN" "D0.250_H0.250_Z0.127" THOU 377
++0 0 0 0
++0 250 0 360
++.END_ELECTRICAL
++
++# cylindrical outline, vertical, 1 pin on left
++# file: "cylvmm_1L_D5_L8_Z3_WD0.8_P3.5.idf"
++# dia: 5.000 mm
++# length: 8.000 mm
++# extra height: 3.000 mm
++# wire dia: 0.800 mm
++# pitch: 3.500 mm
++.ELECTRICAL
++"CYLV_MM_L" "D5.000_H8.000_Z3.000_WD0.800_P3.500" MM 11.000
++1 -0.718 0.400 0
++1 -0.718 -0.400 -341.586
++1 -1.750 -0.400 0
++1 -1.750 0.400 -180
++1 -0.718 0.400 0
++.END_ELECTRICAL
++
++# cylindrical outline, vertical, 1 pin on right
++# file: "cylvmm_1R_D5_L8_Z3_WD0.8_P3.5.idf"
++# dia: 5.000 mm
++# length: 8.000 mm
++# extra height: 3.000 mm
++# wire dia: 0.800 mm
++# pitch: 3.500 mm
++.ELECTRICAL
++"CYLV_MM_R" "D5.000_H8.000_Z3.000_WD0.800_P3.500" MM 11.000
++0 0.718 0.400 0
++0 0.718 -0.400 341.586
++0 1.750 -0.400 0
++0 1.750 0.400 180
++0 0.718 0.400 0
++.END_ELECTRICAL
++
++# cylindrical outline, vertical, 1 pin on left
++# file: "cylvin_1L_D0.25_L0.25_Z0.127_WD0.062_P0.25.idf"
++# dia: 250 THOU
++# length: 250 THOU
++# extra height: 127 THOU
++# wire dia: 62 THOU
++# pitch: 250 THOU
++.ELECTRICAL
++"CYLV_IN_L" "D0.250_H0.250_Z0.127_WD0.062_P0.250" THOU 377
++1 3 31 0
++1 3 -31 -331.282
++1 -125 -31 0
++1 -125 31 -180
++1 3 31 0
++.END_ELECTRICAL
++
++# cylindrical outline, vertical, 1 pin on right
++# file: "cylvin_1R_D0.25_L0.25_Z0.127_WD0.062_P0.25.idf"
++# dia: 250 THOU
++# length: 250 THOU
++# extra height: 127 THOU
++# wire dia: 62 THOU
++# pitch: 250 THOU
++.ELECTRICAL
++"CYLV_IN_R" "D0.250_H0.250_Z0.127_WD0.062_P0.250" THOU 377
++0 -3 31 0
++0 -3 -31 331.282
++0 125 -31 0
++0 125 31 180
++0 -3 31 0
++.END_ELECTRICAL
++
++# cylindrical outline, horiz., axial pins
++# file: "resistor.idf"
++# dia: 2.500 mm
++# length: 4.000 mm
++# extra height: 0.500 mm
++# wire dia: 0.600 mm
++# pitch: 8.000 mm
++.ELECTRICAL
++"CYLH_MM_AXI" "D2.500_H4.000_Z0.500_WD0.600_P8.000" MM 3.000
++0 -2.000 1.250 0
++0 -2.000 0.300 0
++0 -4.000 0.300 0
++0 -4.000 -0.300 180
++0 -2.000 -0.300 0
++0 -2.000 -1.250 0
++0 2.000 -1.250 0
++0 2.000 -0.300 0
++0 4.000 -0.300 0
++0 4.000 0.300 180
++0 2.000 0.300 0
++0 2.000 1.250 0
++0 -2.000 1.250 0
++.END_ELECTRICAL
++
++# cylindrical outline, horiz., axial pins
++# file: "resistor_in.idf"
++# dia: 98 THOU
++# length: 157 THOU
++# extra height: 20 THOU
++# wire dia: 24 THOU
++# pitch: 315 THOU
++.ELECTRICAL
++"CYLH_IN_AXI" "D0.098_H0.157_Z0.020_WD0.024_P0.315" THOU 118
++0 -78 49 0
++0 -78 12 0
++0 -157 12 0
++0 -157 -12 180
++0 -78 -12 0
++0 -78 -49 0
++0 78 -49 0
++0 78 -12 0
++0 157 -12 0
++0 157 12 180
++0 78 12 0
++0 78 49 0
++0 -78 49 0
++.END_ELECTRICAL
++
++# cylindrical outline, horiz., radial pins
++# file: "capacitor.idf"
++# dia: 5.000 mm
++# length: 6.000 mm
++# extra height: 0.200 mm
++# wire dia: 0.600 mm
++# pitch: 2.500 mm
++# lead: 3.000 mm
++.ELECTRICAL
++"CYLH_MM_RAD" "D5.000_H6.000_Z0.200_WD0.600_P2.500_L3.000" MM 5.200
++0 -2.500 9.000 0
++0 -2.500 3.000 0
++0 -1.550 3.000 0
++0 -1.550 0 0
++0 -0.950 0 180
++0 -0.950 3.000 0
++0 0.950 3.000 0
++0 0.950 0 0
++0 1.550 0 180
++0 1.550 3.000 0
++0 2.500 3.000 0
++0 2.500 9.000 0
++0 -2.500 9.000 0
++.END_ELECTRICAL
++
++# cylindrical outline, horiz., radial pins
++# file: "capacitor_in.idf"
++# dia: 197 THOU
++# length: 236 THOU
++# extra height: 8 THOU
++# wire dia: 24 THOU
++# pitch: 98 THOU
++# lead: 118 THOU
++.ELECTRICAL
++"CYLH_IN_RAD" "D0.197_H0.236_Z0.008_WD0.024_P0.098_L0.118" THOU 205
++0 -98 354 0
++0 -98 118 0
++0 -61 118 0
++0 -61 0 0
++0 -37 0 180
++0 -37 118 0
++0 37 118 0
++0 37 0 0
++0 61 0 180
++0 61 118 0
++0 98 118 0
++0 98 354 0
++0 -98 354 0
++.END_ELECTRICAL
++
++# rectangular outline
++# file: "rectMM_10x10x6_C0.idf"
++# width: 10.000 mm
++# length: 10.000 mm
++# height: 6.000 mm
++# chamfer: 0.000 mm
++.ELECTRICAL
++"RECTMM" "W10.000_L10.000_H6.000_C0.000" MM 6.000
++0 5.000 5.000 0
++0 -5.000 5.000 0
++0 -5.000 -5.000 0
++0 5.000 -5.000 0
++0 5.000 5.000 0
++.END_ELECTRICAL
++
++# rectangular outline
++# file: "rectIN_10x10x6mm_C0mm.idf"
++# width: 393 THOU
++# length: 393 THOU
++# height: 236 THOU
++# chamfer: 0 THOU
++.ELECTRICAL
++"RECTIN" "W393_L393_H236_C0" THOU 236
++0 196 196 0
++0 -196 196 0
++0 -196 -196 0
++0 196 -196 0
++0 196 196 0
++.END_ELECTRICAL
++
++# rectangular outline
++# file: "rectMM_10x10x2_C0.5.idf"
++# width: 10.000 mm
++# length: 10.000 mm
++# height: 2.000 mm
++# chamfer: 0.500 mm
++.ELECTRICAL
++"RECTMM" "W10.000_L10.000_H2.000_C0.500" MM 2.000
++0 5.000 5.000 0
++0 -4.500 5.000 0
++0 -5.000 4.500 0
++0 -5.000 -5.000 0
++0 5.000 -5.000 0
++0 5.000 5.000 0
++.END_ELECTRICAL
++
++# rectangular outline
++# file: "rectIN_10x10x2mm_C0.5mm.idf"
++# width: 393 THOU
++# length: 393 THOU
++# height: 78 THOU
++# chamfer: 19 THOU
++.ELECTRICAL
++"RECTIN" "W393_L393_H78_C19" THOU 78
++0 196 196 0
++0 -176 196 0
++0 -196 176 0
++0 -196 -196 0
++0 196 -196 0
++0 196 196 0
++.END_ELECTRICAL
++
++# rectangular outline, leaded
++# file: "rectLMM_10x10x12_D0.8_P6.0.idf"
++# width: 10.000 mm
++# length: 10.000 mm
++# height: 12.000 mm
++# wire dia: 0.800 mm
++# pitch: 6.000 mm
++.ELECTRICAL
++"RECTLMM" "W10.000_L10.000_H12.000_D0.800_P6.000" MM 12.000
++0 3.000 0.400 0
++0 2.000 0.400 0
++0 2.000 5.000 0
++0 -8.000 5.000 0
++0 -8.000 -5.000 0
++0 2.000 -5.000 0
++0 2.000 -0.400 0
++0 3.000 -0.400 0
++0 3.000 0.400 180
++.END_ELECTRICAL
++
++# rectangular outline, leaded
++# file: "rectLIN_10x10x12mm_D0.8mm_P6.0mm.idf"
++# width: 393 THOU
++# length: 393 THOU
++# height: 472 THOU
++# wire dia: 31 THOU
++# pitch: 236 THOU
++.ELECTRICAL
++"RECTLIN" "W393_L393_H472_D31_P236" THOU 472
++0 118 15 0
++0 78 15 0
++0 78 196 0
++0 -315 196 0
++0 -315 -196 0
++0 78 -196 0
++0 78 -15 0
++0 118 -15 0
++0 118 15 180
++.END_ELECTRICAL
++
 
 === added file 'utils/idftools/idf_helpers.cpp'
 --- utils/idftools/idf_helpers.cpp	1970-01-01 00:00:00 +0000
@@ -4071,8 +4440,8 @@
 
 === added file 'utils/idftools/idf_outlines.cpp'
 --- utils/idftools/idf_outlines.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_outlines.cpp	2014-05-23 06:20:05 +0000
-@@ -0,0 +1,2615 @@
++++ utils/idftools/idf_outlines.cpp	2014-05-24 05:01:23 +0000
+@@ -0,0 +1,2614 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -4885,7 +5254,7 @@
 +
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
-+    if( !aBoardFile.good() && !aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && !aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR << "bad .BOARD_OUTLINE section (premature end)\n";
 +        return false;
@@ -4925,7 +5294,7 @@
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
-+    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR << "bad .BOARD_OUTLINE section (premature end)\n";
 +        return false;
@@ -5323,7 +5692,7 @@
 +        // [outline identifier] [thickness] [board side: Top/Bot]
 +        while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
-+        if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++        if( ( !aBoardFile.good() && aBoardFile.eof() ) || iline.empty() )
 +        {
 +            ERROR << "bad .OTHER_OUTLINE section (premature end)\n";
 +            return false;
@@ -5384,7 +5753,7 @@
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
-+    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR << "bad .OTHER_OUTLINE/.VIA_KEEPOUT section (premature end)\n";
 +        return false;
@@ -5606,7 +5975,7 @@
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
-+    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR << "bad .ROUTE_OUTLINE/KEEPOUT section (premature end)\n";
 +        return false;
@@ -5862,7 +6231,7 @@
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
-+    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR << "bad .PLACE_OUTLINE/KEEPOUT section (premature end)\n";
 +        return false;
@@ -6129,7 +6498,7 @@
 +    // check RECORD 4
 +    while( aBoardFile.good() && !FetchIDFLine( aBoardFile, iline, comment, pos ) );
 +
-+    if( !aBoardFile.good() && aBoardFile.eof() || iline.empty() )
++    if( ( !aBoardFile.good() && aBoardFile.eof() ) || iline.empty() )
 +    {
 +        ERROR << "bad .PLACE_REGION section (premature end)\n";
 +        return false;
@@ -6439,7 +6808,7 @@
 +    // check RECORD 4
 +    while( aLibFile.good() && !FetchIDFLine( aLibFile, iline, comment, pos ) );
 +
-+    if( !aLibFile.good() && aLibFile.eof() || iline.empty() )
++    if( ( !aLibFile.good() && aLibFile.eof() ) || iline.empty() )
 +    {
 +        ERROR << "bad component outline data (premature end)\n";
 +        return false;
@@ -6481,10 +6850,7 @@
 +    }
 +
 +    if( refNum == 0 )
-+    {
-+        cerr << "* XXX: no references in outline: '" << GetUID() << "'\n";
 +        return true;    // nothing to do
-+    }
 +
 +    writeComments( aLibFile );
 +
@@ -6647,7 +7013,7 @@
 +    if( ol == NULL )
 +        return false;
 +
-+    for( int i = 1; i < 10; ++i )
++    for( int i = 0; i < 10; ++i )
 +    {
 +        if( i & 1 )
 +        {
@@ -6686,6 +7052,8 @@
 +    }
 +
 +    ol->push( sp );
++    outlines.push_back( ol );
++
 +    return true;
 +}
 
@@ -7451,8 +7819,8 @@
 
 === added file 'utils/idftools/idf_parser.cpp'
 --- utils/idftools/idf_parser.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.cpp	2014-05-23 06:18:54 +0000
-@@ -0,0 +1,3824 @@
++++ utils/idftools/idf_parser.cpp	2014-05-24 23:20:39 +0000
+@@ -0,0 +1,3819 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -7527,14 +7895,14 @@
 +IDF3_COMP_OUTLINE_DATA::IDF3_COMP_OUTLINE_DATA( IDF3_COMPONENT* aParent,
 +                                                IDF3_COMP_OUTLINE* aOutline,
 +                                                double aXoff, double aYoff,
-+                                                double aZoff, double aAoff )
++                                                double aZoff, double aAngleOff )
 +{
 +    parent = aParent;
 +    outline = aOutline;
 +    xoff = aXoff;
 +    yoff = aYoff;
 +    zoff = aZoff;
-+    aoff = aAoff;
++    aoff = aAngleOff;
 +    return;
 +}
 +
@@ -9447,15 +9815,7 @@
 +                }
 +            }
 +
-+            if( olnGroup.insert( pair<string, GROUP_OUTLINE*>(op->GetGroupName(), op) ).second == false )
-+            {
-+                ERROR;
-+                cerr << "* Violation of specification. Non-unique ID in PLACE_REGION '";
-+                cerr << op->GetGroupName() << "'\n";
-+                delete op;
-+                aBoardState = IDF3::FILE_ERROR;
-+                return false;
-+            }
++            olnGroup.insert( pair<string, GROUP_OUTLINE*>(op->GetGroupName(), op) );
 +
 +            return true;
 +        }
@@ -11068,7 +11428,10 @@
 +    cp = new IDF3_COMP_OUTLINE;
 +
 +    if( cp == NULL )
++    {
++        ERROR << "could not create new outline\n";
 +        return NULL;
++    }
 +
 +    if( empty )
 +        cp->CreateDefaultOutline( "", "" );
@@ -11280,8 +11643,8 @@
 
 === added file 'utils/idftools/idf_parser.h'
 --- utils/idftools/idf_parser.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/idf_parser.h	2014-05-23 06:18:45 +0000
-@@ -0,0 +1,614 @@
++++ utils/idftools/idf_parser.h	2014-05-24 23:20:12 +0000
+@@ -0,0 +1,657 @@
 +/*
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -11374,7 +11737,7 @@
 +     * @param aAoff is the rotational offset of this outline in relation to its parent
 +     */
 +    IDF3_COMP_OUTLINE_DATA( IDF3_COMPONENT* aParent, IDF3_COMP_OUTLINE* aOutline,
-+                            double aXoff, double aYoff, double aZoff, double aAoff );
++                            double aXoff, double aYoff, double aZoff, double aAngleOff );
 +
 +    ~IDF3_COMP_OUTLINE_DATA();
 +
@@ -11749,8 +12112,8 @@
 +    std::list<VIA_KO_OUTLINE*> olnViaKeepout;
 +    // PLACE KEEPOUT outlines
 +    std::list<PLACE_KO_OUTLINE*> olnPlaceKeepout;
-+    // PLACEMENT GROUP outlines // XXX - BUG - use multimap since the group names are not unique
-+    std::map<std::string, GROUP_OUTLINE*> olnGroup;
++    // PLACEMENT GROUP outlines
++    std::multimap<std::string, GROUP_OUTLINE*> olnGroup;
 +
 +    // Set the unit; this can only be done internally upon
 +    // reading a file or saving
@@ -11841,15 +12204,58 @@
 +    BOARD_OUTLINE* GetBoardOutline( void );
 +    const std::list< IDF_OUTLINE* >*const GetBoardOutlines( void );
 +
-+    /// XXX - AddDrillComment
-+    /// AddPlacementComment
-+    /// GetDrillComments()
-+    /// GetPlacementComments()
-+    /// ClearDrillComments()
-+    /// ClearPlacementComments()
-+    /// AddNoteComment
-+    /// GetNoteComments
-+    /// AddNote
++    /// XXX - TO BE IMPLEMENTED
++    // AddDrillComment
++    // AddPlacementComment
++    // GetDrillComments()
++    // GetPlacementComments()
++    // ClearDrillComments()
++    // ClearPlacementComments()
++    // AddNoteComment
++    // GetNoteComments
++    // AddNote
++    //
++    // const std::map<std::string, OTHER_OUTLINE*>*const GetOtherOutlines()
++    // size_t GetOtherOutlinesSize()
++    // OTHER_OUTLINE* AddOtherOutline( OTHER_OUTLINE* aOtherOutline )
++    // bool DelOtherOutline( int aIndex )
++    // bool DelOtherOutline( OTHER_OUTLINE* aOtherOutline )
++    //
++    // const std::list<ROUTE_OUTLINE*>*const GetRouteOutlines()
++    // size_t GetRouteOutlinesSize()
++    // ROUTE_OUTLINE* AddRouteOutline( ROUTE_OUTLINE* aRouteOutline )
++    // bool DelRouteOutline( int aIndex )
++    // bool DelRouteOutline( ROUTE_OUTLINE* aRouteOutline )
++    //
++    // const std::list<PLACE_OUTLINE*>*const GetPlacementOutlines()
++    // size_t GetPlacementOutlinesSize()
++    // PLACE_OUTLINE* AddPlacementOutline( PLACE_OUTLINE* aPlaceOutline )
++    // bool DelPlacementOutline( int aIndex )
++    // bool DelPlacementOutline( PLACE_OUTLINE* aPlaceOutline )
++    //
++    // const std::list<ROUTE_KO_OUTLINE*>*const GetRouteKeepOutOutlines()
++    // size_t GetRouteKeepOutOutlinesSize()
++    // ROUTE_KO_OUTLINE* AddRouteKeepoutOutline( ROUTE_KO_OUTLINE* aRouteKeepOut )
++    // bool DelRouteKeepOutOutline( int aIndex )
++    // bool DelRouteKeepOutOutline( ROUTE_KO_OUTLINE* aRouteKeepOut )
++    //
++    // const std::list<VIA_KO_OUTLINE*>*const GetViaKeepOutOutlines()
++    // size_t GetViaKeepOutOutlinesSize()
++    // VIA_KO_OUTLINE* AddViaKeepoutOutline( VIA_KO_OUTLINE* aViaKeepOut )
++    // bool DelViaKeepOutOutline( int aIndex )
++    // bool DelViaKeepOutOutline( VIA_KO_OUTLINE* aViaKeepOut )
++    //
++    // const std::list<PLACE_KO_OUTLINE*>*const GetPlacementKeepOutOutlines()
++    // size_t GetPlacementKeepOutOutlinesSize()
++    // PLACE_KO_OUTLINE* AddPlacementKeepoutOutline( PLACE_KO_OUTLINE* aPlaceKeepOut )
++    // bool DelPlacementKeepOutOutline( int aIndex )
++    // bool DelPlacementKeepOutOutline( PLACE_KO_OUTLINE* aPlaceKeepOut )
++    //
++    // const std::multimap<std::string, GROUP_OUTLINE*>*const GetGroupOutlines()
++    // size_t GetGroupOutlinesSize()
++    // GROUP_OUTLINE* AddGroupOutline( GROUP_OUTLINE* aGroupOutline )
++    // bool DelGroupOutline( int aIndex )
++    // bool DelGroupOutline( GROUP_OUTLINE* aGroupOutline )
 +
 +    std::list<IDF_DRILL_DATA*>& GetBoardDrills( void )
 +    {
@@ -11967,109 +12373,12 @@
              if( pitch <= ( length + wireDia ) / 2.0 )
                  cout << "* WARNING: pitch must be > (length + wireDia)/2\n";
 
-=== added file 'utils/idftools/test_idf2vrml.cpp'
---- utils/idftools/test_idf2vrml.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/test_idf2vrml.cpp	2014-05-17 02:41:09 +0000
-@@ -0,0 +1,92 @@
+=== added file 'utils/idftools/vrml_layer.cpp'
+--- utils/idftools/vrml_layer.cpp	1970-01-01 00:00:00 +0000
++++ utils/idftools/vrml_layer.cpp	2014-05-25 00:38:06 +0000
+@@ -0,0 +1,1576 @@
 +/*
-+ * This program source code file is part of KiCad, a free EDA CAD application.
-+ *
-+ * Copyright (C) 2014  Cirilo Bernardo
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License
-+ * as published by the Free Software Foundation; either version 2
-+ * of the License, or (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-+ * GNU General Public License for more details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, you may find one here:
-+ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-+ * or you may search the http://www.gnu.org website for the version 2 license,
-+ * or you may write to the Free Software Foundation, Inc.,
-+ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
-+ */
-+
-+/*
-+ *  This program takes an IDF base name, loads the board outline
-+ *  and component outine files, and prints out information to
-+ *  verify correct operation of the IDF parser.
-+ */
-+
-+#include <iostream>
-+#include <fstream>
-+#include <string>
-+#include <sstream>
-+#include <cmath>
-+#include <cstdio>
-+#include <list>
-+#include <utility>
-+#include <clocale>
-+#include <vector>
-+#include <idf_helpers.h>
-+#include <idf_common.h>
-+#include <idf_parser.h>
-+#include <vrml_board.h>
-+
-+#define OUTFILE "xxx_test.emn"
-+
-+
-+using namespace std;
-+
-+#define CLEANUP do { \
-+    setlocale( LC_ALL, "C" ); \
-+    } while( 0 );
-+
-+int main( int argc, char **argv )
-+{
-+    // IDF implicitly requires the C locale
-+    setlocale( LC_ALL, "C" );
-+
-+    if( argc != 2 )
-+    {
-+        if( argc < 2 )
-+            cerr << "* No arguments passed on command line.\n";
-+        else
-+            cerr << "* Too many arguments passed on command line.\n";
-+
-+        cerr << "* Usage: testidf2vrml path/to/testfile\n";
-+        CLEANUP;
-+        return -1;
-+    }
-+
-+    IDF3_BOARD pcb( IDF3::CAD_ELEC );
-+
-+    cout << "** Reading file: " << argv[1] << "\n";
-+    if( !pcb.ReadFile( FROM_UTF8( argv[1] ) ) )
-+    {
-+        CLEANUP;
-+        cerr << "* Could not read file: " << argv[1] << "\n";
-+        return -1;
-+    }
-+
-+    cout << "** Writing file: " << OUTFILE << "\n";
-+    if( !pcb.WriteFile( FROM_UTF8( OUTFILE ), IDF3::UNIT_THOU, true ) )
-+    {
-+        CLEANUP;
-+        cerr << "* Could not rewrite file\n";
-+        return -1;
-+    }
-+
-+    // restore the locale
-+    CLEANUP;
-+    return 0;
-+}
-
-=== added file 'utils/idftools/vrml_board.cpp'
---- utils/idftools/vrml_board.cpp	1970-01-01 00:00:00 +0000
-+++ utils/idftools/vrml_board.cpp	2014-05-20 07:10:49 +0000
-@@ -0,0 +1,1555 @@
-+/*
-+ * file: vrml_board.cpp
++ * file: vrml_layer.cpp
 + *
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -12108,7 +12417,7 @@
 +#include <string>
 +#include <iomanip>
 +#include <cmath>
-+#include <vrml_board.h>
++#include <vrml_layer.h>
 +
 +#ifndef CALLBACK
 +#define CALLBACK
@@ -12388,7 +12697,7 @@
 +// adds a vertex to the existing list and places its index in
 +// an existing contour; returns true if OK,
 +// false otherwise (indexed contour does not exist)
-+bool VRML_LAYER::AddVertex( int aContour, double x, double y )
++bool VRML_LAYER::AddVertex( int aContourID, double aXpos, double aYpos )
 +{
 +    if( fix )
 +    {
@@ -12396,7 +12705,7 @@
 +        return false;
 +    }
 +
-+    if( aContour < 0 || (unsigned int) aContour >= contours.size() )
++    if( aContourID < 0 || (unsigned int) aContourID >= contours.size() )
 +    {
 +        error = "AddVertex(): aContour is not within a valid range";
 +        return false;
@@ -12410,21 +12719,21 @@
 +        return false;
 +    }
 +
-+    vertex->x   = x;
-+    vertex->y   = y;
++    vertex->x   = aXpos;
++    vertex->y   = aYpos;
 +    vertex->i   = idx++;
 +    vertex->o   = -1;
 +
 +    VERTEX_3D* v2 = NULL;
 +
-+    if( contours[aContour]->size() > 0 )
-+        v2 = vertices[ contours[aContour]->back() ];
++    if( contours[aContourID]->size() > 0 )
++        v2 = vertices[ contours[aContourID]->back() ];
 +
 +    vertices.push_back( vertex );
-+    contours[aContour]->push_back( vertex->i );
++    contours[aContourID]->push_back( vertex->i );
 +
 +    if( v2 )
-+        areas[aContour] += ( x - v2->x ) * ( y + v2->y );
++        areas[aContourID] += ( aXpos - v2->x ) * ( aYpos + v2->y );
 +
 +    return true;
 +}
@@ -12432,15 +12741,15 @@
 +
 +// ensure the winding of a contour with respect to the normal (0, 0, 1);
 +// set 'hole' to true to ensure a hole (clockwise winding)
-+bool VRML_LAYER::EnsureWinding( int aContour, bool hole )
++bool VRML_LAYER::EnsureWinding( int aContourID, bool aHoleFlag )
 +{
-+    if( aContour < 0 || (unsigned int) aContour >= contours.size() )
++    if( aContourID < 0 || (unsigned int) aContourID >= contours.size() )
 +    {
 +        error = "EnsureWinding(): aContour is outside the valid range";
 +        return false;
 +    }
 +
-+    std::list<int>* cp = contours[aContour];
++    std::list<int>* cp = contours[aContourID];
 +
 +    if( cp->size() < 3 )
 +    {
@@ -12448,7 +12757,7 @@
 +        return false;
 +    }
 +
-+    double dir = areas[aContour];
++    double dir = areas[aContourID];
 +
 +    VERTEX_3D* vp0 = vertices[ cp->back() ];
 +    VERTEX_3D* vp1 = vertices[ cp->front() ];
@@ -12456,32 +12765,34 @@
 +    dir += ( vp1->x - vp0->x ) * ( vp1->y + vp0->y );
 +
 +    // if dir is positive, winding is CW
-+    if( ( hole && dir < 0 ) || ( !hole && dir > 0 ) )
++    if( ( aHoleFlag && dir < 0 ) || ( !aHoleFlag && dir > 0 ) )
 +    {
 +        cp->reverse();
-+        areas[aContour] = -areas[aContour];
++        areas[aContourID] = -areas[aContourID];
 +    }
 +
 +    return true;
 +}
 +
 +
-+bool VRML_LAYER::AppendCircle( double x, double y, double rad, int contour, bool hole )
++bool VRML_LAYER::AppendCircle( double aXpos, double aYpos,
++                               double aRadius, int aContourID,
++                               bool aHoleFlag )
 +{
-+    if( contour < 0 || (unsigned int) contour >= contours.size() )
++    if( aContourID < 0 || (unsigned int) aContourID >= contours.size() )
 +    {
 +        error = "AppendCircle(): invalid contour (out of range)";
 +        return false;
 +    }
 +
-+    int nsides = M_PI * 2.0 * rad / minSegLength;
++    int nsides = M_PI * 2.0 * aRadius / minSegLength;
 +
 +    if( nsides > maxArcSeg )
 +    {
 +        if( nsides > 2 * maxArcSeg )
 +        {
 +            // use segments approx. maxAr
-+            nsides = M_PI * 2.0 * rad / maxSegLength;
++            nsides = M_PI * 2.0 * aRadius / maxSegLength;
 +        }
 +        else
 +        {
@@ -12500,19 +12811,21 @@
 +
 +    bool fail = false;
 +
-+    if( hole )
++    if( aHoleFlag )
 +    {
-+        fail |= !AddVertex( contour, x + rad, y );
++        fail |= !AddVertex( aContourID, aXpos + aRadius, aYpos );
 +
 +        for( double angle = da; angle < M_PI * 2; angle += da )
-+            fail |= !AddVertex( contour, x + rad * cos( angle ), y - rad * sin( angle ) );
++            fail |= !AddVertex( aContourID, aXpos + aRadius * cos( angle ),
++                                aYpos - aRadius * sin( angle ) );
 +    }
 +    else
 +    {
-+        fail |= !AddVertex( contour, x + rad, y );
++        fail |= !AddVertex( aContourID, aXpos + aRadius, aYpos );
 +
 +        for( double angle = da; angle < M_PI * 2; angle += da )
-+            fail |= !AddVertex( contour, x + rad * cos( angle ), y + rad * sin( angle ) );
++            fail |= !AddVertex( aContourID, aXpos + aRadius * cos( angle ),
++                                aYpos + aRadius * sin( angle ) );
 +    }
 +
 +    return !fail;
@@ -12521,7 +12834,7 @@
 +
 +// adds a circle the existing list; if 'hole' is true the contour is
 +// a hole. Returns true if OK.
-+bool VRML_LAYER::AddCircle( double x, double y, double rad, bool hole )
++bool VRML_LAYER::AddCircle( double aXpos, double aYpos, double aRadius, bool aHoleFlag )
 +{
 +    int pad = NewContour();
 +
@@ -12531,32 +12844,33 @@
 +        return false;
 +    }
 +
-+    return AppendCircle( x, y, rad, pad, hole );
++    return AppendCircle( aXpos, aYpos, aRadius, pad, aHoleFlag );
 +}
 +
 +
 +// adds a slotted pad with orientation given by angle; if 'hole' is true the
 +// contour is a hole. Returns true if OK.
-+bool VRML_LAYER::AddSlot( double cx, double cy, double length, double width,
-+        double angle, bool hole )
++bool VRML_LAYER::AddSlot( double aCenterX, double aCenterY,
++                          double aSlotLength, double aSlotWidth,
++                          double aAngle, bool aHoleFlag )
 +{
-+    angle *= M_PI / 180.0;
++    aAngle *= M_PI / 180.0;
 +
-+    if( width > length )
++    if( aSlotWidth > aSlotLength )
 +    {
-+        angle += M_PI2;
-+        std::swap( length, width );
++        aAngle += M_PI2;
++        std::swap( aSlotLength, aSlotWidth );
 +    }
 +
-+    width   /= 2.0;
-+    length  = length / 2.0 - width;
++    aSlotWidth /= 2.0;
++    aSlotLength = aSlotLength / 2.0 - aSlotWidth;
 +
-+    int csides = calcNSides( width, M_PI );
++    int csides = calcNSides( aSlotWidth, M_PI );
 +
 +    double capx, capy;
 +
-+    capx    = cx + cos( angle ) * length;
-+    capy    = cy + sin( angle ) * length;
++    capx    = aCenterX + cos( aAngle ) * aSlotLength;
++    capy    = aCenterY + sin( aAngle ) * aSlotLength;
 +
 +    double ang, da;
 +    int i;
@@ -12571,39 +12885,47 @@
 +    da = M_PI / csides;
 +    bool fail = false;
 +
-+    if( hole )
++    if( aHoleFlag )
 +    {
-+        for( ang = angle + M_PI2, i = 0; i < csides; ang -= da, ++i )
-+            fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        for( ang = aAngle + M_PI2, i = 0; i < csides; ang -= da, ++i )
++            fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                                capy + aSlotWidth * sin( ang ) );
 +
-+        ang = angle - M_PI2;
-+        fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        ang = aAngle - M_PI2;
++        fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                            capy + aSlotWidth * sin( ang ) );
 +
-+        capx    = cx - cos( angle ) * length;
-+        capy    = cy - sin( angle ) * length;
++        capx    = aCenterX - cos( aAngle ) * aSlotLength;
++        capy    = aCenterY - sin( aAngle ) * aSlotLength;
 +
-+        for( ang = angle - M_PI2, i = 0; i < csides; ang -= da, ++i )
-+            fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        for( ang = aAngle - M_PI2, i = 0; i < csides; ang -= da, ++i )
++            fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                                capy + aSlotWidth * sin( ang ) );
 +
-+        ang = angle + M_PI2;
-+        fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        ang = aAngle + M_PI2;
++        fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                            capy + aSlotWidth * sin( ang ) );
 +    }
 +    else
 +    {
-+        for( ang = angle - M_PI2, i = 0; i < csides; ang += da, ++i )
-+            fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        for( ang = aAngle - M_PI2, i = 0; i < csides; ang += da, ++i )
++            fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                                capy + aSlotWidth * sin( ang ) );
 +
-+        ang = angle + M_PI2;
-+        fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        ang = aAngle + M_PI2;
++        fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                            capy + aSlotWidth * sin( ang ) );
 +
-+        capx    = cx - cos( angle ) * length;
-+        capy    = cy - sin( angle ) * length;
++        capx    = aCenterX - cos( aAngle ) * aSlotLength;
++        capy    = aCenterY - sin( aAngle ) * aSlotLength;
 +
-+        for( ang = angle + M_PI2, i = 0; i < csides; ang += da, ++i )
-+            fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        for( ang = aAngle + M_PI2, i = 0; i < csides; ang += da, ++i )
++            fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                                capy + aSlotWidth * sin( ang ) );
 +
-+        ang = angle - M_PI2;
-+        fail |= !AddVertex( pad, capx + width * cos( ang ), capy + width * sin( ang ) );
++        ang = aAngle - M_PI2;
++        fail |= !AddVertex( pad, capx + aSlotWidth * cos( ang ),
++                            capy + aSlotWidth * sin( ang ) );
 +    }
 +
 +    return !fail;
@@ -12611,34 +12933,37 @@
 +
 +
 +// adds an arc to the given center, start point, pen width, and angle (degrees).
-+bool VRML_LAYER::AppendArc( double x, double y, double rad, double startAngle, double angle, int contour )
++bool VRML_LAYER::AppendArc( double aCenterX, double aCenterY, double aRadius,
++                            double aStartAngle, double aAngle, int aContourID )
 +{
-+    if( contour < 0 || (unsigned int) contour >= contours.size() )
++    if( aContourID < 0 || (unsigned int) aContourID >= contours.size() )
 +    {
 +        error = "AppendArc(): invalid contour (out of range)";
 +        return false;
 +    }
 +
-+    angle = angle / 180.0 * M_PI;
-+    startAngle = startAngle / 180.0 * M_PI;
++    aAngle = aAngle / 180.0 * M_PI;
++    aStartAngle = aStartAngle / 180.0 * M_PI;
 +
-+    int nsides = calcNSides( rad, angle );
++    int nsides = calcNSides( aRadius, aAngle );
 +
-+    double da = angle / nsides;
++    double da = aAngle / nsides;
 +
 +    bool fail = false;
 +
-+    if( angle > 0 )
++    if( aAngle > 0 )
 +    {
-+        angle += startAngle;
-+        for( double ang = startAngle; ang < angle; ang += da )
-+            fail |= !AddVertex( contour, x + rad * cos( ang ), y + rad * sin( ang ) );
++        aAngle += aStartAngle;
++        for( double ang = aStartAngle; ang < aAngle; ang += da )
++            fail |= !AddVertex( aContourID, aCenterX + aRadius * cos( ang ),
++                                aCenterY + aRadius * sin( ang ) );
 +    }
 +    else
 +    {
-+        angle += startAngle;
-+        for( double ang = startAngle; ang > angle; ang += da )
-+            fail |= !AddVertex( contour, x + rad * cos( ang ), y + rad * sin( ang ) );
++        aAngle += aStartAngle;
++        for( double ang = aStartAngle; ang > aAngle; ang += da )
++            fail |= !AddVertex( aContourID, aCenterX + aRadius * cos( ang ),
++                                aCenterY + aRadius * sin( ang ) );
 +    }
 +
 +    return !fail;
@@ -12646,57 +12971,58 @@
 +
 +
 +// adds an arc with the given center, start point, pen width, and angle (degrees).
-+bool VRML_LAYER::AddArc( double cx, double cy, double startx, double starty,
-+        double width, double angle, bool hole )
++bool VRML_LAYER::AddArc( double aCenterX, double aCenterY, double aStartX, double aStartY,
++                         double aArcWidth, double aAngle, bool aHoleFlag )
 +{
-+    angle *= M_PI / 180.0;
++    aAngle *= M_PI / 180.0;
 +
 +    // we don't accept small angles; in fact, 1 degree ( 0.01745 ) is already
 +    // way too small but we must set a limit somewhere
-+    if( angle < 0.01745 && angle > -0.01745 )
++    if( aAngle < 0.01745 && aAngle > -0.01745 )
 +    {
 +        error = "AddArc(): angle is too small: abs( angle ) < 1 degree";
 +        return false;
 +    }
 +
-+    double rad = sqrt( (startx - cx) * (startx - cx) + (starty - cy) * (starty - cy) );
++    double rad = sqrt( (aStartX - aCenterX) * (aStartX - aCenterX)
++                        + (aStartY - aCenterY) * (aStartY - aCenterY) );
 +
-+    width /= 2.0;    // this is the radius of the caps
++    aArcWidth /= 2.0;    // this is the radius of the caps
 +
 +    // we will not accept an arc with an inner radius close to zero so we
 +    // set a limit here. the end result will vary somewhat depending on
 +    // the output units
-+    if( width >= ( rad * 1.01 ) )
++    if( aArcWidth >= ( rad * 1.01 ) )
 +    {
 +        error = "AddArc(): width/2 exceeds radius*1.01";
 +        return false;
 +    }
 +
 +    // calculate the radii of the outer and inner arcs
-+    double  orad    = rad + width;
-+    double  irad    = rad - width;
++    double  orad    = rad + aArcWidth;
++    double  irad    = rad - aArcWidth;
 +
-+    int osides  = calcNSides( orad, angle );
-+    int isides  = calcNSides( irad, angle );
-+    int csides  = calcNSides( width, M_PI );
++    int osides  = calcNSides( orad, aAngle );
++    int isides  = calcNSides( irad, aAngle );
++    int csides  = calcNSides( aArcWidth, M_PI );
 +
-+    double  stAngle     = atan2( starty - cy, startx - cx );
-+    double  endAngle    = stAngle + angle;
++    double  stAngle     = atan2( aStartY - aCenterY, aStartX - aCenterX );
++    double  endAngle    = stAngle + aAngle;
 +
 +    // calculate ends of inner and outer arc
-+    double  oendx   = cx + orad* cos( endAngle );
-+    double  oendy   = cy + orad* sin( endAngle );
-+    double  ostx    = cx + orad* cos( stAngle );
-+    double  osty    = cy + orad* sin( stAngle );
++    double  oendx   = aCenterX + orad* cos( endAngle );
++    double  oendy   = aCenterY + orad* sin( endAngle );
++    double  ostx    = aCenterX + orad* cos( stAngle );
++    double  osty    = aCenterY + orad* sin( stAngle );
 +
-+    double  iendx   = cx + irad* cos( endAngle );
-+    double  iendy   = cy + irad* sin( endAngle );
-+    double  istx    = cx + irad* cos( stAngle );
-+    double  isty    = cy + irad* sin( stAngle );
++    double  iendx   = aCenterX + irad* cos( endAngle );
++    double  iendy   = aCenterY + irad* sin( endAngle );
++    double  istx    = aCenterX + irad* cos( stAngle );
++    double  isty    = aCenterY + irad* sin( stAngle );
 +
-+    if( ( angle < 0 && !hole ) || ( angle > 0 && hole ) )
++    if( ( aAngle < 0 && !aHoleFlag ) || ( aAngle > 0 && aHoleFlag ) )
 +    {
-+        angle = -angle;
++        aAngle = -aAngle;
 +        std::swap( stAngle, endAngle );
 +        std::swap( oendx, ostx );
 +        std::swap( oendy, osty );
@@ -12715,40 +13041,40 @@
 +    // trace the outer arc:
 +    int i;
 +    double  ang;
-+    double  da = angle / osides;
++    double  da = aAngle / osides;
 +
 +    for( ang = stAngle, i = 0; i < osides; ang += da, ++i )
-+        AddVertex( arc, cx + orad * cos( ang ), cy + orad * sin( ang ) );
++        AddVertex( arc, aCenterX + orad * cos( ang ), aCenterY + orad * sin( ang ) );
 +
 +    // trace the first cap
 +    double  capx    = ( iendx + oendx ) / 2.0;
 +    double  capy    = ( iendy + oendy ) / 2.0;
 +
-+    if( hole )
++    if( aHoleFlag )
 +        da = -M_PI / csides;
 +    else
 +        da = M_PI / csides;
 +
-+    for( ang = endAngle + da, i = 2; i < csides; ang += da, ++i )
-+        AddVertex( arc, capx + width * cos( ang ), capy + width * sin( ang ) );
++    for( ang = endAngle, i = 0; i < csides; ang += da, ++i )
++        AddVertex( arc, capx + aArcWidth * cos( ang ), capy + aArcWidth * sin( ang ) );
 +
 +    // trace the inner arc:
-+    da = -angle / isides;
++    da = -aAngle / isides;
 +
 +    for( ang = endAngle, i = 0; i < isides; ang += da, ++i )
-+        AddVertex( arc, cx + irad * cos( ang ), cy + irad * sin( ang ) );
++        AddVertex( arc, aCenterX + irad * cos( ang ), aCenterY + irad * sin( ang ) );
 +
 +    // trace the final cap
 +    capx    = ( istx + ostx ) / 2.0;
 +    capy    = ( isty + osty ) / 2.0;
 +
-+    if( hole )
++    if( aHoleFlag )
 +        da = -M_PI / csides;
 +    else
 +        da = M_PI / csides;
 +
-+    for( ang = stAngle + M_PI + da, i = 2; i < csides; ang += da, ++i )
-+        AddVertex( arc, capx + width * cos( ang ), capy + width * sin( ang ) );
++    for( ang = stAngle + M_PI, i = 0; i < csides; ang += da, ++i )
++        AddVertex( arc, capx + aArcWidth * cos( ang ), capy + aArcWidth * sin( ang ) );
 +
 +    return true;
 +}
@@ -12945,9 +13271,8 @@
 +}
 +
 +
-+// writes out the vertex list;
-+// 'z' is the Z coordinate of every point
-+bool VRML_LAYER::WriteVertices( double z, std::ofstream& out, int precision )
++// writes out the vertex list for a planar feature
++bool VRML_LAYER::WriteVertices( double aZcoord, std::ofstream& aOutFile, int aPrecision )
 +{
 +    if( ordmap.size() < 3 )
 +    {
@@ -12955,8 +13280,8 @@
 +        return false;
 +    }
 +
-+    if( precision < 4 )
-+        precision = 4;
++    if( aPrecision < 4 )
++        aPrecision = 4;
 +
 +    int i, j;
 +
@@ -12966,10 +13291,10 @@
 +        return false;
 +
 +    std::string strx, stry, strz;
-+    FormatDoublet( vp->x, vp->y, precision, strx, stry );
-+    FormatSinglet( z, precision, strz );
++    FormatDoublet( vp->x, vp->y, aPrecision, strx, stry );
++    FormatSinglet( aZcoord, aPrecision, strz );
 +
-+    out << strx << " " << stry << " " << strz;
++    aOutFile << strx << " " << stry << " " << strz;
 +
 +    for( i = 1, j = ordmap.size(); i < j; ++i )
 +    {
@@ -12978,21 +13303,22 @@
 +        if( !vp )
 +            return false;
 +
-+        FormatDoublet( vp->x, vp->y, precision, strx, stry );
++        FormatDoublet( vp->x, vp->y, aPrecision, strx, stry );
 +
 +        if( i & 1 )
-+            out << ", " << strx << " " << stry << " " << strz;
++            aOutFile << ", " << strx << " " << stry << " " << strz;
 +        else
-+            out << ",\n" << strx << " " << stry << " " << strz;
++            aOutFile << ",\n" << strx << " " << stry << " " << strz;
 +    }
 +
-+    return !out.fail();
++    return !aOutFile.fail();
 +}
 +
 +
 +// writes out the vertex list for a 3D feature; top and bottom are the
 +// Z values for the top and bottom; top must be > bottom
-+bool VRML_LAYER::Write3DVertices( double top, double bottom, std::ofstream& out, int precision )
++bool VRML_LAYER::Write3DVertices( double aTopZ, double aBottomZ,
++                                  std::ofstream& aOutFile, int aPrecision )
 +{
 +    if( ordmap.size() < 3 )
 +    {
@@ -13000,7 +13326,10 @@
 +        return false;
 +    }
 +
-+    if( top <= bottom )
++    if( aPrecision < 4 )
++        aPrecision = 4;
++
++    if( aTopZ <= aBottomZ )
 +    {
 +        error = "Write3DVertices(): top <= bottom";
 +        return false;
@@ -13014,10 +13343,10 @@
 +        return false;
 +
 +    std::string strx, stry, strz;
-+    FormatDoublet( vp->x, vp->y, precision, strx, stry );
-+    FormatSinglet( top, precision, strz );
++    FormatDoublet( vp->x, vp->y, aPrecision, strx, stry );
++    FormatSinglet( aTopZ, aPrecision, strz );
 +
-+    out << strx << " " << stry << " " << strz;
++    aOutFile << strx << " " << stry << " " << strz;
 +
 +    for( i = 1, j = ordmap.size(); i < j; ++i )
 +    {
@@ -13026,57 +13355,57 @@
 +        if( !vp )
 +            return false;
 +
-+        FormatDoublet( vp->x, vp->y, precision, strx, stry );
++        FormatDoublet( vp->x, vp->y, aPrecision, strx, stry );
 +
 +        if( i & 1 )
-+            out << ", " << strx << " " << stry << " " << strz;
++            aOutFile << ", " << strx << " " << stry << " " << strz;
 +        else
-+            out << ",\n" << strx << " " << stry << " " << strz;
++            aOutFile << ",\n" << strx << " " << stry << " " << strz;
 +    }
 +
 +    // repeat for the bottom layer
 +    vp = getVertexByIndex( ordmap[0], pholes );
-+    FormatDoublet( vp->x, vp->y, precision, strx, stry );
-+    FormatSinglet( bottom, precision, strz );
++    FormatDoublet( vp->x, vp->y, aPrecision, strx, stry );
++    FormatSinglet( aBottomZ, aPrecision, strz );
 +
 +    bool endl;
 +
 +    if( i & 1 )
 +    {
-+        out << ", " << strx << " " << stry << " " << strz;
++        aOutFile << ", " << strx << " " << stry << " " << strz;
 +        endl = false;
 +    }
 +    else
 +    {
-+        out << ",\n" << strx << " " << stry << " " << strz;
++        aOutFile << ",\n" << strx << " " << stry << " " << strz;
 +        endl = true;
 +    }
 +
 +    for( i = 1, j = ordmap.size(); i < j; ++i )
 +    {
 +        vp = getVertexByIndex( ordmap[i], pholes );
-+        FormatDoublet( vp->x, vp->y, precision, strx, stry );
++        FormatDoublet( vp->x, vp->y, aPrecision, strx, stry );
 +
 +        if( endl )
 +        {
-+            out << ", " << strx << " " << stry << " " << strz;
++            aOutFile << ", " << strx << " " << stry << " " << strz;
 +            endl = false;
 +        }
 +        else
 +        {
-+            out << ",\n" << strx << " " << stry << " " << strz;
++            aOutFile << ",\n" << strx << " " << stry << " " << strz;
 +            endl = true;
 +        }
 +    }
 +
-+    return !out.fail();
++    return !aOutFile.fail();
 +}
 +
 +
 +// writes out the index list;
 +// 'top' indicates the vertex ordering and should be
 +// true for a polygon visible from above the PCB
-+bool VRML_LAYER::WriteIndices( bool top, std::ofstream& out )
++bool VRML_LAYER::WriteIndices( bool aTopFlag, std::ofstream& aOutFile )
 +{
 +    if( triplets.empty() )
 +    {
@@ -13090,10 +13419,10 @@
 +
 +    int i = 1;
 +
-+    if( top )
-+        out << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
++    if( aTopFlag )
++        aOutFile << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
 +    else
-+        out << tbeg->i2 << ", " << tbeg->i1 << ", " << tbeg->i3  << ", -1";
++        aOutFile << tbeg->i2 << ", " << tbeg->i1 << ", " << tbeg->i3  << ", -1";
 +
 +    ++tbeg;
 +
@@ -13103,28 +13432,28 @@
 +        {
 +            i = 1;
 +
-+            if( top )
-+                out << ",\n" << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
++            if( aTopFlag )
++                aOutFile << ",\n" << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
 +            else
-+                out << ",\n" << tbeg->i2 << ", " << tbeg->i1 << ", " << tbeg->i3  << ", -1";
++                aOutFile << ",\n" << tbeg->i2 << ", " << tbeg->i1 << ", " << tbeg->i3  << ", -1";
 +        }
 +        else
 +        {
-+            if( top )
-+                out << ", " << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
++            if( aTopFlag )
++                aOutFile << ", " << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
 +            else
-+                out << ", " << tbeg->i2 << ", " << tbeg->i1 << ", " << tbeg->i3  << ", -1";
++                aOutFile << ", " << tbeg->i2 << ", " << tbeg->i1 << ", " << tbeg->i3  << ", -1";
 +        }
 +
 +        ++tbeg;
 +    }
 +
-+    return !out.fail();
++    return !aOutFile.fail();
 +}
 +
 +
 +// writes out the index list for a 3D feature
-+bool VRML_LAYER::Write3DIndices( std::ofstream& out )
++bool VRML_LAYER::Write3DIndices( std::ofstream& aOutFile )
 +{
 +    if( triplets.empty() )
 +    {
@@ -13146,7 +13475,7 @@
 +    int idx2 = ordmap.size();    // index to the bottom vertices
 +
 +    // print out the top vertices
-+    out << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
++    aOutFile << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
 +    ++tbeg;
 +
 +    while( tbeg != tend )
@@ -13154,11 +13483,11 @@
 +        if( (i++ & 7) == 4 )
 +        {
 +            i = 1;
-+            out << ",\n" << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
++            aOutFile << ",\n" << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
 +        }
 +        else
 +        {
-+            out << ", " << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
++            aOutFile << ", " << tbeg->i1 << ", " << tbeg->i2 << ", " << tbeg->i3  << ", -1";
 +        }
 +
 +        ++tbeg;
@@ -13172,16 +13501,17 @@
 +        if( (i++ & 7) == 4 )
 +        {
 +            i = 1;
-+            out << ",\n" << (tbeg->i2 + idx2) << ", " << (tbeg->i1 + idx2) << ", " << (tbeg->i3  + idx2) << ", -1";
++            aOutFile << ",\n" << (tbeg->i2 + idx2) << ", " << (tbeg->i1 + idx2) << ", " << (tbeg->i3  + idx2) << ", -1";
 +        }
 +        else
 +        {
-+            out << ", " << (tbeg->i2 + idx2) << ", " << (tbeg->i1 + idx2) << ", " << (tbeg->i3  + idx2) << ", -1";
++            aOutFile << ", " << (tbeg->i2 + idx2) << ", " << (tbeg->i1 + idx2) << ", " << (tbeg->i3  + idx2) << ", -1";
 +        }
 +
 +        ++tbeg;
 +    }
 +
++    // print out indices for the walls joining top to bottom
 +    int firstPoint;
 +    int lastPoint;
 +    int curPoint;
@@ -13216,32 +13546,32 @@
 +            if( (i++ & 3) == 2 )
 +            {
 +                i = 1;
-+                out << ",\n" << curPoint << ", " << lastPoint << ", " << curPoint + idx2;
-+                out << ", -1, " << curPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
++                aOutFile << ",\n" << curPoint << ", " << lastPoint << ", " << curPoint + idx2;
++                aOutFile << ", -1, " << curPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
 +            }
 +            else
 +            {
-+                out << ", " << curPoint << ", " << lastPoint << ", " << curPoint + idx2;
-+                out << ", -1, " << curPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
++                aOutFile << ", " << curPoint << ", " << lastPoint << ", " << curPoint + idx2;
++                aOutFile << ", -1, " << curPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
 +            }
 +            lastPoint = curPoint;
 +        }
 +
 +        if( (i++ & 3) == 2 )
 +        {
-+            out << ",\n" << firstPoint << ", " << lastPoint << ", " << firstPoint + idx2;
-+            out << ", -1, " << firstPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
++            aOutFile << ",\n" << firstPoint << ", " << lastPoint << ", " << firstPoint + idx2;
++            aOutFile << ", -1, " << firstPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
 +        }
 +        else
 +        {
-+            out << ", " << firstPoint << ", " << lastPoint << ", " << firstPoint + idx2;
-+            out << ", -1, " << firstPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
++            aOutFile << ", " << firstPoint << ", " << lastPoint << ", " << firstPoint + idx2;
++            aOutFile << ", -1, " << firstPoint + idx2 << ", " << lastPoint << ", " << lastPoint + idx2 << ", -1";
 +        }
 +
 +        ++obeg;
 +    }
 +
-+    return !out.fail();
++    return !aOutFile.fail();
 +}
 +
 +
@@ -13281,7 +13611,7 @@
 +
 +
 +// add an extra vertex (to be called only by the COMBINE callback)
-+VERTEX_3D* VRML_LAYER::AddExtraVertex( double x, double y )
++VERTEX_3D* VRML_LAYER::AddExtraVertex( double aXpos, double aYpos )
 +{
 +    VERTEX_3D* vertex = new VERTEX_3D;
 +
@@ -13294,8 +13624,8 @@
 +    if( eidx == 0 )
 +        eidx = idx + hidx;
 +
-+    vertex->x   = x;
-+    vertex->y   = y;
++    vertex->x   = aXpos;
++    vertex->y   = aYpos;
 +    vertex->i   = eidx++;
 +    vertex->o   = -1;
 +
@@ -13496,23 +13826,23 @@
 +}
 +
 +
-+VERTEX_3D* VRML_LAYER::getVertexByIndex( int index, VRML_LAYER* holes )
++VERTEX_3D* VRML_LAYER::getVertexByIndex( int aPointIndex, VRML_LAYER* holes )
 +{
-+    if( index < 0 || (unsigned int) index >= ( idx + hidx + extra_verts.size() ) )
++    if( aPointIndex < 0 || (unsigned int) aPointIndex >= ( idx + hidx + extra_verts.size() ) )
 +    {
 +        error = "getVertexByIndex():BUG: invalid index";
 +        return NULL;
 +    }
 +
-+    if( index < idx )
++    if( aPointIndex < idx )
 +    {
 +        // vertex is in the vertices[] list
-+        return vertices[ index ];
++        return vertices[ aPointIndex ];
 +    }
-+    else if( index >= idx + hidx )
++    else if( aPointIndex >= idx + hidx )
 +    {
 +        // vertex is in the extra_verts[] list
-+        return extra_verts[index - idx - hidx];
++        return extra_verts[aPointIndex - idx - hidx];
 +    }
 +
 +    // vertex is in the holes object
@@ -13522,7 +13852,7 @@
 +        return NULL;
 +    }
 +
-+    VERTEX_3D* vp = holes->GetVertexByIndex( index );
++    VERTEX_3D* vp = holes->GetVertexByIndex( aPointIndex );
 +
 +    if( !vp )
 +    {
@@ -13604,17 +13934,17 @@
 +
 +
 +// return the vertex identified by index
-+VERTEX_3D* VRML_LAYER::GetVertexByIndex( int index )
++VERTEX_3D* VRML_LAYER::GetVertexByIndex( int aPointIndex )
 +{
 +    int i0 = vertices[0]->i;
 +
-+    if( index < i0 || index >= ( i0 + (int) vertices.size() ) )
++    if( aPointIndex < i0 || aPointIndex >= ( i0 + (int) vertices.size() ) )
 +    {
 +        error = "GetVertexByIndex(): invalid index";
 +        return NULL;
 +    }
 +
-+    return vertices[index - i0];
++    return vertices[aPointIndex - i0];
 +}
 +
 +
@@ -13624,12 +13954,12 @@
 +    return error;
 +}
 
-=== added file 'utils/idftools/vrml_board.h'
---- utils/idftools/vrml_board.h	1970-01-01 00:00:00 +0000
-+++ utils/idftools/vrml_board.h	2014-05-20 07:34:07 +0000
+=== added file 'utils/idftools/vrml_layer.h'
+--- utils/idftools/vrml_layer.h	1970-01-01 00:00:00 +0000
++++ utils/idftools/vrml_layer.h	2014-05-25 00:37:03 +0000
 @@ -0,0 +1,429 @@
 +/*
-+ * file: vrml_board.h
++ * file: vrml_layer.h
 + *
 + * This program source code file is part of KiCad, a free EDA CAD application.
 + *
@@ -13654,16 +13984,13 @@
 + */
 +
 +/**
-+ *  @file vrml_board.h
++ *  @file vrml_layer.h
 + */
 +
 +/*
 + *  Classes and structures to support the tesselation of a
 + *  PCB for VRML output.
 + */
-+
-+// XXX - check 'AddArc' (slotted arc) and how it uses CalcNSides();
-+// make use of the arc parameters
 +
 +#ifndef VRML_BOARD_H
 +#define VRML_BOARD_H
@@ -13752,7 +14079,7 @@
 +
 +    // retrieve a vertex given its index; the vertex may be contained in the
 +    // vertices vector, extra_verts vector, or foreign VRML_LAYER object
-+    VERTEX_3D* getVertexByIndex( int index, VRML_LAYER* holes );
++    VERTEX_3D* getVertexByIndex( int aPointIndex, VRML_LAYER* holes );
 +
 +    void    processFan( void );                 // process a GL_TRIANGLE_FAN list
 +    void    processStrip( void );               // process a GL_TRIANGLE_STRIP list
@@ -13828,12 +14155,12 @@
 +     * adds a point to the requested contour
 +     *
 +     * @param aContour is an index previously returned by a call to NewContour()
-+     * @param x is the X coordinate of the vertex
-+     * @param y is the Y coordinate of the vertex
++     * @param aXpos is the X coordinate of the vertex
++     * @param aYpos is the Y coordinate of the vertex
 +     *
 +     * @return bool: true if the vertex was added
 +     */
-+    bool AddVertex( int aContour, double x, double y );
++    bool AddVertex( int aContourID, double aXpos, double aYpos );
 +
 +    /**
 +     * Function EnsureWinding
@@ -13841,145 +14168,148 @@
 +     * a solid depending on the value of @param hole
 +     *
 +     * @param aContour is an index to a contour as returned by NewContour()
-+     * @param hole determines if the contour must be a hole
++     * @param aHoleFlag determines if the contour must be a hole
 +     *
 +     * @return bool: true if the operation suceeded
 +     */
-+    bool EnsureWinding( int aContour, bool hole );
++    bool EnsureWinding( int aContourID, bool aHoleFlag );
 +
 +    /**
 +     * Function AppendCircle
 +     * adds a circular contour to the specified (empty) contour
 +     *
-+     * @param x is the X coordinate of the hole center
-+     * @param y is the Y coordinate of the hole center
-+     * @param rad is the radius of the hole
-+     * @param contour is the contour index
-+     * @param hole determines if the contour to be created is a cutout
++     * @param aXpos is the X coordinate of the hole center
++     * @param aYpos is the Y coordinate of the hole center
++     * @param aRadius is the radius of the hole
++     * @param aContourID is the contour index
++     * @param aHoleFlag determines if the contour to be created is a cutout
 +     *
 +     * @return bool: true if the new contour was successfully created
 +     */
-+    bool AppendCircle( double x, double y, double rad, int contour, bool hole = false );
++    bool AppendCircle( double aXpos, double aYpos, double aRadius, int aContourID, bool aHoleFlag = false );
 +
 +    /**
 +     * Function AddCircle
 +     * creates a circular contour and adds it to the internal list
 +     *
-+     * @param x is the X coordinate of the hole center
-+     * @param y is the Y coordinate of the hole center
-+     * @param rad is the radius of the hole
-+     * @param hole determines if the contour to be created is a cutout
++     * @param aXpos  is the X coordinate of the hole center
++     * @param aYpos is the Y coordinate of the hole center
++     * @param aRadius is the radius of the hole
++     * @param aHoleFlag determines if the contour to be created is a cutout
 +     *
 +     * @return bool: true if the new contour was successfully created
 +     */
-+    bool AddCircle( double x, double y, double rad, bool hole = false );
++    bool AddCircle( double aXpos, double aYpos, double aRadius, bool aHoleFlag = false );
 +
 +    /**
 +     * Function AddSlot
 +     * creates and adds a slot feature to the list of contours
 +     *
-+     * @param cx is the X coordinate of the slot's center
-+     * @param cy is the Y coordinate of the slot's center
-+     * @param length is the length of the slot along the major axis
-+     * @param width is the width of the slot along the minor axis
-+     * @param angle (degrees) is the orientation of the slot
-+     * @param hole determines whether the slot is a hole or a solid
++     * @param aCenterX is the X coordinate of the slot's center
++     * @param aCenterY is the Y coordinate of the slot's center
++     * @param aSlotLength is the length of the slot along the major axis
++     * @param aSlotWidth is the width of the slot along the minor axis
++     * @param aAngle (degrees) is the orientation of the slot
++     * @param aHoleFlag determines whether the slot is a hole or a solid
 +     *
 +     * @return bool: true if the slot was successfully created
 +     */
-+    bool AddSlot( double cx, double cy, double length, double width,
-+            double angle, bool hole = false );
++    bool AddSlot( double aCenterX, double aCenterY, double aSlotLength, double aSlotWidth,
++            double aAngle, bool aHoleFlag = false );
 +
 +    /**
 +     * Function AppendArc
 +     * adds an arc to the specified contour
 +     *
-+     * @param x is the X coordinate of the arc's center
-+     * @param y is the Y coordinate of the arc's center
-+     * @param rad is the radius of the arc
-+     * @param startAngle (degrees) is the starting angle of the arc
-+     * @param angle (degrees) is the measure of the arc
-+     * @param contour is the contour's index
++     * @param aCenterX is the X coordinate of the arc's center
++     * @param aCenterY is the Y coordinate of the arc's center
++     * @param aRadius is the radius of the arc
++     * @param aStartAngle (degrees) is the starting angle of the arc
++     * @param aAngle (degrees) is the measure of the arc
++     * @param aContourID is the contour's index
 +     *
 +     * @return bool: true if the slot was successfully created
 +     */
-+    bool AppendArc( double x, double y, double rad, double startAngle, double angle, int contour );
++    bool AppendArc( double aCenterX, double aCenterY, double aRadius,
++                    double aStartAngle, double aAngle, int aContourID );
 +
 +    /**
 +     * Function AddArc
 +     * creates a slotted arc and adds it to the internal list of contours
 +     *
-+     * @param cx is the X coordinate of the arc's center
-+     * @param cy is the Y coordinate of the arc's center
-+     * @param startx is the X coordinate of the starting point
-+     * @param starty is the Y coordinate of the starting point
-+     * @param width is the width of the arc
-+     * @param angle is the included angle (degrees)
-+     * @param hole determined whether the arc is to be a hole or a solid
++     * @param aCenterX is the X coordinate of the arc's center
++     * @param aCenterY is the Y coordinate of the arc's center
++     * @param aStartX is the X coordinate of the starting point
++     * @param aStartY is the Y coordinate of the starting point
++     * @param aArcWidth is the width of the arc
++     * @param aAngle is the included angle (degrees)
++     * @param aHoleFlag determines whether the arc is to be a hole or a solid
 +     *
 +     * @return bool: true if the feature was successfully created
 +     */
-+    bool AddArc( double cx, double cy, double startx, double starty,
-+            double width, double angle, bool hole = false );
++    bool AddArc( double aCenterX, double aCenterY, double aStartX, double aStartY,
++            double aArcWidth, double aAngle, bool aHoleFlag = false );
 +
 +    /**
 +     * Function Tesselate
 +     * creates a list of outline vertices as well as the
 +     * vertex sets required to render the surface.
 +     *
-+     * @param holes  is a pointer to cutouts to be imposed on the
++     * @param holes  is an optional pointer to cutouts to be imposed on the
 +     * surface.
 +     *
 +     * @return bool: true if the operation succeeded
 +     */
-+    bool Tesselate( VRML_LAYER* holes );
++    bool Tesselate( VRML_LAYER* holes = NULL );
 +
 +    /**
 +     * Function WriteVertices
 +     * writes out the list of vertices required to render a
 +     * planar surface.
 +     *
-+     * @param z is the Z coordinate of the plane
-+     * @param fp is the file to write to
++     * @param aZcoord  is the Z coordinate of the plane
++     * @param aOutFile is the file to write to
++     * @param aPrecision is the precision of the output coordinates
 +     *
 +     * @return bool: true if the operation succeeded
 +     */
-+    bool WriteVertices( double z, std::ofstream& out, int precision );
++    bool WriteVertices( double aZcoord, std::ofstream& aOutFile, int aPrecision );
 +
 +    /**
 +     * Function Write3DVertices
 +     * writes out the list of vertices required to render an extruded solid
 +     *
-+     * @param top is the Z coordinate of the top plane
-+     * @param bottom is the Z coordinate of the bottom plane
-+     * @param fp is the file to write to
++     * @param aTopZ is the Z coordinate of the top plane
++     * @param aBottomZ is the Z coordinate of the bottom plane
++     * @param aOutFile is the file to write to
++     * @param aPrecision is the precision of the output coordinates
 +     *
 +     * @return bool: true if the operation succeeded
 +     */
-+    bool Write3DVertices( double top, double bottom, std::ofstream& out, int precision );
++    bool Write3DVertices( double aTopZ, double aBottomZ, std::ofstream& aOutFile, int aPrecision );
 +
 +    /**
 +     * Function WriteIndices
 +     * writes out the vertex sets required to render a planar
 +     * surface.
 +     *
-+     * @param top is true if the surface is to be visible from above;
++     * @param aTopFlag is true if the surface is to be visible from above;
 +     * if false the surface will be visible from below.
-+     * @param fp is the file to write to
++     * @param aOutFile is the file to write to
 +     *
 +     * @return bool: true if the operation succeeded
 +     */
-+    bool WriteIndices( bool top, std::ofstream& out );
++    bool WriteIndices( bool aTopFlag, std::ofstream& aOutFile );
 +
 +    /**
 +     * Function Write3DIndices
 +     * writes out the vertex sets required to render an extruded solid
 +     *
-+     * @param fp is the file to write to
++     * @param aOutFile is the file to write to
 +     *
 +     * @return bool: true if the operation succeeded
 +     */
-+    bool Write3DIndices( std::ofstream& out );
++    bool Write3DIndices( std::ofstream& aOutFile );
 +
 +    /**
 +     * Function AddExtraVertex
@@ -13988,7 +14318,7 @@
 +     * @return VERTEX_3D*: is the new vertex or NULL if a vertex
 +     * could not be created.
 +     */
-+    VERTEX_3D* AddExtraVertex( double x, double y );
++    VERTEX_3D* AddExtraVertex( double aXpos, double aYpos );
 +
 +    /**
 +     * Function glStart
@@ -14043,11 +14373,11 @@
 +     * returns a pointer to the requested vertex or
 +     * NULL if no such vertex exists.
 +     *
-+     * @param ptindex is a vertex index
++     * @param aPointIndex is a vertex index
 +     *
 +     * @return VERTEX_3D*: the requested vertex or NULL
 +     */
-+    VERTEX_3D* GetVertexByIndex( int ptindex );
++    VERTEX_3D* GetVertexByIndex( int aPointIndex );
 +
 +    /*
 +     * Function GetError
