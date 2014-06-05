@@ -1,0 +1,3472 @@
+=== modified file 'pcbnew/CMakeLists.txt'
+--- pcbnew/CMakeLists.txt	2014-05-18 15:16:59 +0000
++++ pcbnew/CMakeLists.txt	2014-06-05 05:04:18 +0000
+@@ -36,6 +36,7 @@
+     ./exporters
+     ../lib_dxf
+     ./import_dxf
++    ../utils/idftools
+     ${INC_AFTER}
+     )
+ 
+@@ -136,8 +137,6 @@
+     exporters/export_gencad.cpp
+     exporters/export_idf.cpp
+     exporters/export_vrml.cpp
+-    exporters/idf_common.cpp
+-    exporters/idf.cpp
+     exporters/gen_drill_report_files.cpp
+     exporters/gen_modules_placefile.cpp
+     exporters/gendrill_Excellon_writer.cpp
+@@ -385,6 +384,7 @@
+         common
+         pcad2kicadpcb
+         lib_dxf
++        idf3
+         ${GITHUB_PLUGIN_LIBRARIES}
+         polygon
+         bitmaps
+@@ -565,6 +565,7 @@
+         bitmaps
+         gal
+         lib_dxf
++        idf3
+         ${GITHUB_PLUGIN_LIBRARIES}
+         ${wxWidgets_LIBRARIES}
+         ${OPENGL_LIBRARIES}
+@@ -633,6 +634,7 @@
+         bitmaps
+         gal
+         lib_dxf
++        idf3
+         ${GITHUB_PLUGIN_LIBRARIES}
+         ${wxWidgets_LIBRARIES}
+         ${OPENGL_LIBRARIES}
+
+=== modified file 'pcbnew/dialogs/dialog_export_idf.cpp'
+--- pcbnew/dialogs/dialog_export_idf.cpp	2014-04-02 13:38:59 +0000
++++ pcbnew/dialogs/dialog_export_idf.cpp	2014-06-02 10:23:47 +0000
+@@ -36,7 +36,7 @@
+ #define OPTKEY_IDF_THOU wxT( "IDFExportThou" )
+ 
+ 
+-bool Export_IDF3( BOARD *aPcb, const wxString & aFullFileName, double aUseThou );
++bool Export_IDF3( BOARD *aPcb, const wxString & aFullFileName, bool aUseThou );
+ 
+ 
+ class DIALOG_EXPORT_IDF3: public DIALOG_EXPORT_IDF3_BASE
+
+=== modified file 'pcbnew/exporters/export_idf.cpp'
+--- pcbnew/exporters/export_idf.cpp	2014-05-18 15:16:59 +0000
++++ pcbnew/exporters/export_idf.cpp	2014-06-05 06:00:57 +0000
+@@ -33,8 +33,9 @@
+ #include <class_board.h>
+ #include <class_module.h>
+ #include <class_edge_mod.h>
+-#include <idf.h>
++#include <idf_parser.h>
+ #include <3d_struct.h>
++#include <build_version.h>
+ 
+ // assumed default graphical line thickness: 10000 IU == 0.1mm
+ #define LINE_WIDTH (100000)
+@@ -45,15 +46,15 @@
+  * the data into a form which can be output as an IDFv3 compliant
+  * BOARD_OUTLINE section.
+  */
+-static void idf_export_outline( BOARD* aPcb, IDF_BOARD& aIDFBoard )
++static void idf_export_outline( BOARD* aPcb, IDF3_BOARD& aIDFBoard )
+ {
+-    double scale = aIDFBoard.GetScale();
++    double scale = aIDFBoard.GetUserScale();
+ 
+     DRAWSEGMENT* graphic;               // KiCad graphical item
+     IDF_POINT sp, ep;                   // start and end points from KiCad item
+ 
+     std::list< IDF_SEGMENT* > lines;    // IDF intermediate form of KiCad graphical item
+-    IDF_OUTLINE outline;                // graphical items forming an outline or cutout
++    IDF_OUTLINE* outline = NULL;        // graphical items forming an outline or cutout
+ 
+     // NOTE: IMPLEMENTATION
+     // If/when component cutouts are allowed, we must implement them separately. Cutouts
+@@ -61,7 +62,7 @@
+     // The module cutouts should be handled via the idf_export_module() routine.
+ 
+     double offX, offY;
+-    aIDFBoard.GetOffset( offX, offY );
++    aIDFBoard.GetUserOffset( offX, offY );
+ 
+     // Retrieve segments and arcs from the board
+     for( BOARD_ITEM* item = aPcb->m_Drawings; item; item = item->Next() )
+@@ -129,22 +130,31 @@
+     // note: we do not use a try/catch block here since we intend
+     // to simply ignore unclosed loops and continue processing
+     // until we're out of segments to process
+-    IDF3::GetOutline( lines, outline );
++    outline = new IDF_OUTLINE;
++    IDF3::GetOutline( lines, *outline );
+ 
+-    if( outline.empty() )
++    if( outline->empty() )
+         goto UseBoundingBox;
+ 
+-    aIDFBoard.AddOutline( outline );
++    aIDFBoard.AddBoardOutline( outline );
++    outline = NULL;
+ 
+     // get all cutouts and write them out
+     while( !lines.empty() )
+     {
+-        IDF3::GetOutline( lines, outline );
+-
+-        if( outline.empty() )
++        if( !outline )
++            outline = new IDF_OUTLINE;
++
++        IDF3::GetOutline( lines, *outline );
++
++        if( outline->empty() )
++        {
++            outline->Clear();
+             continue;
++        }
+ 
+-        aIDFBoard.AddOutline( outline );
++        aIDFBoard.AddBoardOutline( outline );
++        outline = NULL;
+     }
+ 
+     return;
+@@ -158,7 +168,10 @@
+         lines.pop_front();
+     }
+ 
+-    outline.Clear();
++    if( outline )
++        outline->Clear();
++    else
++        outline = new IDF_OUTLINE;
+ 
+     // fetch a rectangular bounding box for the board;
+     // there is always some uncertainty in the board dimensions
+@@ -192,7 +205,7 @@
+     p2.x    = px[0];
+     p2.y    = py[0];
+ 
+-    outline.push( new IDF_SEGMENT( p1, p2 ) );
++    outline->push( new IDF_SEGMENT( p1, p2 ) );
+ 
+     for( int i = 1; i < 4; ++i )
+     {
+@@ -201,10 +214,10 @@
+         p2.x    = px[i];
+         p2.y    = py[i];
+ 
+-        outline.push( new IDF_SEGMENT( p1, p2 ) );
++        outline->push( new IDF_SEGMENT( p1, p2 ) );
+     }
+ 
+-    aIDFBoard.AddOutline( outline );
++    aIDFBoard.AddBoardOutline( outline );
+ }
+ 
+ 
+@@ -216,7 +229,7 @@
+  * the library ELECTRICAL section.
+  */
+ static void idf_export_module( BOARD* aPcb, MODULE* aModule,
+-        IDF_BOARD& aIDFBoard )
++        IDF3_BOARD& aIDFBoard )
+ {
+     // Reference Designator
+     std::string crefdes = TO_UTF8( aModule->GetReference() );
+@@ -243,14 +256,14 @@
+ 
+     // Export pads
+     double  drill, x, y;
+-    double  scale = aIDFBoard.GetScale();
++    double  scale = aIDFBoard.GetUserScale();
+     IDF3::KEY_PLATING kplate;
+     std::string pintype;
+     std::string tstr;
+ 
+     double dx, dy;
+ 
+-    aIDFBoard.GetOffset( dx, dy );
++    aIDFBoard.GetUserOffset( dx, dy );
+ 
+     for( D_PAD* pad = aModule->Pads(); pad; pad = pad->Next() )
+     {
+@@ -313,7 +326,19 @@
+             }
+             else
+             {
+-                aIDFBoard.AddDrill( drill, x, y, kplate, crefdes, pintype, IDF3::ECAD );
++                IDF_DRILL_DATA *dp = new IDF_DRILL_DATA( drill, x, y, kplate, crefdes,
++                                                         pintype, IDF3::ECAD );
++
++                if( !aIDFBoard.AddDrill( dp ) )
++                {
++                    delete dp;
++
++                    std::ostringstream ostr;
++                    ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__;
++                    ostr << "(): could not add drill";
++
++                    throw std::runtime_error( ostr.str() );
++                }
+             }
+         }
+     }
+@@ -321,6 +346,8 @@
+     // add any valid models to the library item list
+     std::string refdes;
+ 
++    IDF3_COMPONENT* comp = NULL;
++
+     for( S3D_MASTER* modfile = aModule->Models(); modfile != 0; modfile = modfile->Next() )
+     {
+         if( !modfile->Is3DType( S3D_MASTER::FILE3D_IDF ) )
+@@ -330,14 +357,26 @@
+         {
+             refdes = TO_UTF8( aModule->GetReference() );
+ 
++            // NOREFDES cannot be used or else the software gets confused
++            // when writing out the placement data due to conflicting
++            // placement and layer specifications; to work around this we
++            // create a (hopefully) unique refdes for our exported part.
+             if( refdes.empty() || !refdes.compare( "~" ) )
+-                refdes = aIDFBoard.GetRefDes();
++                refdes = aIDFBoard.GetNewRefDes();
+         }
+ 
++        IDF3_COMP_OUTLINE* outline;
++
++        outline = aIDFBoard.GetComponentOutline( modfile->GetShape3DName() );
++
++        if( !outline )
++            throw( std::runtime_error( aIDFBoard.GetError() ) );
++
+         double rotz = aModule->GetOrientation()/10.0;
+         double locx = modfile->m_MatPosition.x;
+         double locy = modfile->m_MatPosition.y;
+         double locz = modfile->m_MatPosition.z;
++        double lrot = modfile->m_MatRotation.z;
+ 
+         bool top = ( aModule->GetLayer() == LAYER_N_BACK ) ? false : true;
+ 
+@@ -348,12 +387,12 @@
+             RotatePoint( &locx, &locy, aModule->GetOrientation() );
+             locy = -locy;
+         }
++
+         if( !top )
+         {
+             RotatePoint( &locx, &locy, aModule->GetOrientation() );
+             locy = -locy;
+ 
+-            rotz -= modfile->m_MatRotation.z;
+             rotz = 180.0 - rotz;
+ 
+             if( rotz >= 360.0 )
+@@ -363,10 +402,97 @@
+                 while( rotz <= -360.0 ) rotz += 360.0;
+         }
+ 
+-        locx += aModule->GetPosition().x * scale + dx;
+-        locy += -aModule->GetPosition().y * scale + dy;
+-
+-        aIDFBoard.PlaceComponent( modfile->GetShape3DName(), refdes, locx, locy, locz, rotz, top );
++        if( comp == NULL )
++            comp = aIDFBoard.FindComponent( refdes );
++
++        if( comp == NULL )
++        {
++            comp = new IDF3_COMPONENT( &aIDFBoard );
++
++            if( comp == NULL )
++                throw( std::runtime_error( aIDFBoard.GetError() ) );
++
++            comp->SetRefDes( refdes );
++
++            if( top )
++                comp->SetPosition( aModule->GetPosition().x * scale + dx,
++                                   -aModule->GetPosition().y * scale + dy,
++                                   rotz, IDF3::LYR_TOP );
++            else
++                comp->SetPosition( aModule->GetPosition().x * scale + dx,
++                                   -aModule->GetPosition().y * scale + dy,
++                                   rotz, IDF3::LYR_BOTTOM );
++
++            comp->SetPlacement( IDF3::PS_ECAD );
++
++            aIDFBoard.AddComponent( comp );
++        }
++        else
++        {
++            double refX, refY, refA;
++            IDF3::IDF_LAYER side;
++
++            if( ! comp->GetPosition( refX, refY, refA, side ) )
++            {
++                // place the item
++                if( top )
++                    comp->SetPosition( aModule->GetPosition().x * scale + dx,
++                                       -aModule->GetPosition().y * scale + dy,
++                                       rotz, IDF3::LYR_TOP );
++                    else
++                        comp->SetPosition( aModule->GetPosition().x * scale + dx,
++                                           -aModule->GetPosition().y * scale + dy,
++                                           rotz, IDF3::LYR_BOTTOM );
++            }
++            else
++            {
++                // check that the retrieved component matches this one
++                refX = refX - ( aModule->GetPosition().x * scale + dx );
++                refY = refY - ( -aModule->GetPosition().y * scale + dy );
++                refA = refA - rotz;
++                refA *= refA;
++                refX *= refX;
++                refY *= refY;
++                refX += refY;
++
++                // conditions: same side, X,Y coordinates within 10 microns,
++                // angle within 0.01 degree
++                if( ( top && side == IDF3::LYR_BOTTOM ) || ( !top && side == IDF3::LYR_TOP )
++                    || ( refA > 0.0001 ) || ( refX > 0.0001 ) )
++                {
++                    comp->GetPosition( refX, refY, refA, side );
++
++                    std::ostringstream ostr;
++                    ostr << "* " << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "():\n";
++                    ostr << "* conflicting Reference Designator '" << refdes << "'\n";
++                    ostr << "* X loc: " << (aModule->GetPosition().x * scale + dx);
++                    ostr << " vs. " << refX << "\n";
++                    ostr << "* Y loc: " << (-aModule->GetPosition().y * scale + dy);
++                    ostr << " vs. " << refY << "\n";
++                    ostr << "* angle: " << rotz;
++                    ostr << " vs. " << refA << "\n";
++
++                    if( top )
++                        ostr << "* TOP vs. ";
++                    else
++                        ostr << "* BOTTOM vs. ";
++
++                    if( side == IDF3::LYR_TOP )
++                        ostr << "TOP";
++                    else
++                        ostr << "BOTTOM";
++                    
++                    throw( std::runtime_error( ostr.str() ) );
++                }
++            }
++        }
++
++
++        // create the local data ...
++        IDF3_COMP_OUTLINE_DATA* data = new IDF3_COMP_OUTLINE_DATA( comp, outline );
++
++        data->SetOffsets( locx, locy, locz, lrot );
++        comp->AddOutlineData( data );
+     }
+ 
+     return;
+@@ -378,21 +504,45 @@
+  * generates IDFv3 compliant board (*.emn) and library (*.emp)
+  * files representing the user's PCB design.
+  */
+-bool Export_IDF3( BOARD* aPcb, const wxString& aFullFileName, double aUseThou )
++bool Export_IDF3( BOARD* aPcb, const wxString& aFullFileName, bool aUseThou )
+ {
+-    IDF_BOARD idfBoard;
++    IDF3_BOARD idfBoard( IDF3::CAD_ELEC );
+ 
+     SetLocaleTo_C_standard();
+ 
++    bool ok = true;
++    double scale = 1e-6;    // we must scale internal units to mm for IDF
++    IDF3::IDF_UNIT idfUnit;
++
++    if( aUseThou )
++    {
++        idfUnit = IDF3::UNIT_THOU;
++        idfBoard.SetUserPrecision( 1 );
++    }
++    else
++    {
++        idfUnit = IDF3::UNIT_MM;
++        idfBoard.SetUserPrecision( 5 );
++    }
++
++    wxFileName brdName = aPcb->GetFileName();
++
++    idfBoard.SetUserScale( scale );
++    idfBoard.SetBoardThickness( aPcb->GetDesignSettings().GetBoardThickness() * scale );
++    idfBoard.SetBoardName( TO_UTF8( brdName.GetFullName() ) );
++    idfBoard.SetBoardVersion( 0 );
++    idfBoard.SetLibraryVersion( 0 );
++
++    std::ostringstream ostr;
++    ostr << "Created by KiCad " << TO_UTF8( GetBuildVersion() );
++    idfBoard.SetIDFSource( ostr.str() );
++
+     try
+     {
+-        idfBoard.Setup( aPcb->GetFileName(), aFullFileName, aUseThou,
+-                        aPcb->GetDesignSettings().GetBoardThickness() );
+-
+         // set up the global offsets
+         EDA_RECT bbox = aPcb->ComputeBoundingBox( true );
+-        idfBoard.SetOffset( -bbox.Centre().x * idfBoard.GetScale(),
+-                            bbox.Centre().y * idfBoard.GetScale() );
++        idfBoard.SetUserOffset( -bbox.Centre().x * scale,
++                            bbox.Centre().y * scale );
+ 
+         // Export the board outline
+         idf_export_outline( aPcb, idfBoard );
+@@ -401,15 +551,32 @@
+         for( MODULE* module = aPcb->m_Modules; module != 0; module = module->Next() )
+             idf_export_module( aPcb, module, idfBoard );
+ 
+-        idfBoard.Finish();
++        if( !idfBoard.WriteFile( aFullFileName, idfUnit, false ) )
++        {
++            wxString msg;
++            msg << _( "IDF Export Failed:\n" ) << FROM_UTF8( idfBoard.GetError().c_str() );
++            wxMessageBox( msg );
++
++            ok = false;
++        }
+     }
+     catch( const IO_ERROR& ioe )
+     {
+-        wxLogDebug( wxT( "An error occurred attemping export to IDFv3.\n\nError: %s" ),
+-                    GetChars( ioe.errorText ) );
++        wxString msg;
++        msg << _( "IDF Export Failed:\n" ) << ioe.errorText;
++        wxMessageBox( msg );
++
++        ok = false;
++    }
++    catch( std::exception& e )
++    {
++        wxString msg;
++        msg << _( "IDF Export Failed:\n" ) << FROM_UTF8( e.what() );
++        wxMessageBox( msg );
++        ok = false;
+     }
+ 
+     SetLocaleTo_Default();
+ 
+-    return true;
++    return ok;
+ }
+
+=== removed file 'pcbnew/exporters/idf.cpp'
+--- pcbnew/exporters/idf.cpp	2014-05-18 15:16:59 +0000
++++ pcbnew/exporters/idf.cpp	1970-01-01 00:00:00 +0000
+@@ -1,1443 +0,0 @@
+-/**
+- * file: idf.cpp
+- *
+- * This program source code file is part of KiCad, a free EDA CAD application.
+- *
+- * Copyright (C) 2013-2014  Cirilo Bernardo
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * as published by the Free Software Foundation; either version 2
+- * of the License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, you may find one here:
+- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+- * or you may search the http://www.gnu.org website for the version 2 license,
+- * or you may write to the Free Software Foundation, Inc.,
+- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+- */
+-
+-// TODO: Consider using different precision formats for THOU vs MM output
+-// Keep in mind that THOU cannot represent MM very well although MM can
+-// represent 1 THOU with 4 decimal places. For modern manufacturing we
+-// are interested in a resolution of about 0.1 THOU.
+-
+-#include <list>
+-#include <string>
+-#include <iostream>
+-#include <fstream>
+-#include <sstream>
+-#include <algorithm>
+-#include <cstdio>
+-#include <cmath>
+-#include <ctime>
+-#include <cctype>
+-#include <strings.h>
+-#include <pgm_base.h>
+-#include <wx/config.h>
+-#include <wx/file.h>
+-#include <wx/filename.h>
+-#include <macros.h>
+-#include <richio.h>
+-#include <idf.h>
+-#include <build_version.h>
+-
+-// minimum drill diameter (nanometers) - 10000 is a 0.01mm drill
+-#define IDF_MIN_DIA ( 10000.0 )
+-
+-// minimum board thickness; this is about 0.012mm (0.5 mils)
+-// which is about the thickness of a single kapton layer typically
+-// used in a flexible design.
+-#define IDF_MIN_BRD_THICKNESS (12000)
+-
+-
+-// START: a few routines to help IDF_LIB but which may be of general use in the future
+-// as IDF support develops
+-
+-// fetch a line from the given input file and trim the ends
+-static bool FetchIDFLine( std::ifstream& aModel, std::string& aLine, bool& isComment );
+-
+-// extract an IDF string and move the index to point to the character after the substring
+-static bool GetIDFString( const std::string& aLine, std::string& aIDFString,
+-                          bool& hasQuotes, int& aIndex );
+-
+-// END: IDF_LIB helper routines
+-
+-
+-IDF_DRILL_DATA::IDF_DRILL_DATA( double aDrillDia, double aPosX, double aPosY,
+-        IDF3::KEY_PLATING aPlating,
+-        const std::string aRefDes,
+-        const std::string aHoleType,
+-        IDF3::KEY_OWNER aOwner )
+-{
+-    if( aDrillDia < 0.3 )
+-        dia = 0.3;
+-    else
+-        dia = aDrillDia;
+-
+-    x = aPosX;
+-    y = aPosY;
+-    plating = aPlating;
+-
+-    if( !aRefDes.compare( "BOARD" ) )
+-    {
+-        kref = IDF3::BOARD;
+-    }
+-    else if( aRefDes.empty() || !aRefDes.compare( "NOREFDES" ) )
+-    {
+-        kref = IDF3::NOREFDES;
+-    }
+-    else if( !aRefDes.compare( "PANEL" ) )
+-    {
+-        kref = IDF3::PANEL;
+-    }
+-    else
+-    {
+-        kref = IDF3::REFDES;
+-        refdes = aRefDes;
+-    }
+-
+-    if( !aHoleType.compare( "PIN" ) )
+-    {
+-        khole = IDF3::PIN;
+-    }
+-    else if( !aHoleType.compare( "VIA" ) )
+-    {
+-        khole = IDF3::VIA;
+-    }
+-    else if( aHoleType.empty() || !aHoleType.compare( "MTG" ) )
+-    {
+-        khole = IDF3::MTG;
+-    }
+-    else if( !aHoleType.compare( "TOOL" ) )
+-    {
+-        khole = IDF3::TOOL;
+-    }
+-    else
+-    {
+-        khole = IDF3::OTHER;
+-        holetype = aHoleType;
+-    }
+-
+-    owner = aOwner;
+-}    // IDF_DRILL_DATA::IDF_DRILL_DATA( ... )
+-
+-
+-bool IDF_DRILL_DATA::Write( FILE* aLayoutFile )
+-{
+-    // TODO: check stream integrity and return 'false' as appropriate
+-
+-    if( !aLayoutFile )
+-        return false;
+-
+-    std::string holestr;
+-    std::string refstr;
+-    std::string ownstr;
+-    std::string pltstr;
+-
+-    switch( khole )
+-    {
+-    case IDF3::PIN:
+-        holestr = "PIN";
+-        break;
+-
+-    case IDF3::VIA:
+-        holestr = "VIA";
+-        break;
+-
+-    case IDF3::TOOL:
+-        holestr = "TOOL";
+-        break;
+-
+-    case IDF3::OTHER:
+-        holestr = "\"" + holetype + "\"";
+-        break;
+-
+-    default:
+-        holestr = "MTG";
+-        break;
+-    }
+-
+-    switch( kref )
+-    {
+-    case IDF3::BOARD:
+-        refstr = "BOARD";
+-        break;
+-
+-    case IDF3::PANEL:
+-        refstr = "PANEL";
+-        break;
+-
+-    case IDF3::REFDES:
+-        refstr = "\"" + refdes + "\"";
+-        break;
+-
+-    default:
+-        refstr = "NOREFDES";
+-        break;
+-    }
+-
+-    if( plating == IDF3::PTH )
+-        pltstr = "PTH";
+-    else
+-        pltstr = "NPTH";
+-
+-    switch( owner )
+-    {
+-    case IDF3::MCAD:
+-        ownstr = "MCAD";
+-        break;
+-
+-    case IDF3::ECAD:
+-        ownstr = "ECAD";
+-        break;
+-
+-    default:
+-        ownstr = "UNOWNED";
+-    }
+-
+-    fprintf( aLayoutFile, "%.3f %.5f %.5f %s %s %s %s\n",
+-            dia, x, y, pltstr.c_str(), refstr.c_str(), holestr.c_str(), ownstr.c_str() );
+-
+-    return true;
+-}    // IDF_DRILL_DATA::Write( aLayoutFile )
+-
+-
+-IDF_BOARD::IDF_BOARD()
+-{
+-    refdesIndex = 0;
+-    outlineIndex = 0;
+-    scale = 1e-6;
+-    boardThickness = 1.6;       // default to 1.6mm thick boards
+-
+-    useThou = false;            // by default we want mm output
+-    hasBrdOutlineHdr = false;
+-
+-    layoutFile = NULL;
+-    libFile = NULL;
+-}
+-
+-
+-IDF_BOARD::~IDF_BOARD()
+-{
+-    // simply close files if they are open; do not attempt
+-    // anything else since a previous exception may have left
+-    // data in a bad state.
+-    if( layoutFile != NULL )
+-    {
+-        fclose( layoutFile );
+-        layoutFile = NULL;
+-    }
+-
+-    if( libFile != NULL )
+-    {
+-        fclose( libFile );
+-        libFile = NULL;
+-    }
+-}
+-
+-
+-bool IDF_BOARD::Setup( wxString aBoardName,
+-        wxString aFullFileName,
+-        bool aUseThou,
+-        int aBoardThickness )
+-{
+-    if( aBoardThickness < IDF_MIN_BRD_THICKNESS )
+-        return false;
+-
+-    if( aUseThou )
+-    {
+-        useThou = true;
+-        scale = 1e-3 / 25.4;
+-    }
+-    else
+-    {
+-        useThou = false;
+-        scale = 1e-6;
+-    }
+-
+-    boardThickness = aBoardThickness * scale;
+-
+-    wxFileName brdname( aBoardName );
+-    wxFileName idfname( aFullFileName );
+-
+-    // open the layout file
+-    idfname.SetExt( wxT( "emn" ) );
+-    layoutFile = wxFopen( aFullFileName, wxT( "wt" ) );
+-
+-    if( layoutFile == NULL )
+-        return false;
+-
+-    // open the library file
+-    idfname.SetExt( wxT( "emp" ) );
+-    libFile = wxFopen( idfname.GetFullPath(), wxT( "wt" ) );
+-
+-    if( libFile == NULL )
+-    {
+-        fclose( layoutFile );
+-        layoutFile = NULL;
+-        return false;
+-    }
+-
+-    wxDateTime tdate( time( NULL ) );
+-
+-    fprintf( layoutFile, ".HEADER\n"
+-                         "BOARD_FILE 3.0 \"Created by KiCad %s\""
+-                         " %.4u/%.2u/%.2u.%.2u:%.2u:%.2u 1\n"
+-                         "\"%s\" %s\n"
+-                         ".END_HEADER\n\n",
+-            TO_UTF8( GetBuildVersion() ),
+-            tdate.GetYear(), tdate.GetMonth() + 1, tdate.GetDay(),
+-            tdate.GetHour(), tdate.GetMinute(), tdate.GetSecond(),
+-            TO_UTF8( brdname.GetFullName() ), useThou ? "THOU" : "MM" );
+-
+-    fprintf( libFile, ".HEADER\n"
+-                      "LIBRARY_FILE 3.0 \"Created by KiCad %s\" %.4d/%.2d/%.2d.%.2d:%.2d:%.2d 1\n"
+-                      ".END_HEADER\n\n",
+-            TO_UTF8( GetBuildVersion() ),
+-            tdate.GetYear(), tdate.GetMonth() + 1, tdate.GetDay(),
+-            tdate.GetHour(), tdate.GetMinute(), tdate.GetSecond() );
+-
+-    return true;
+-}
+-
+-
+-bool IDF_BOARD::Finish( void )
+-{
+-    // Steps to finalize the board and library files:
+-    // 1. (emn) close the BOARD_OUTLINE section
+-    // 2. (emn) write out the DRILLED_HOLES section
+-    // 3. (emp) finalize the library file
+-    // 4. (emn) write out the COMPONENT_PLACEMENT section
+-
+-    if( layoutFile == NULL || libFile == NULL )
+-        return false;
+-
+-    // Finalize the board outline section
+-    fprintf( layoutFile, ".END_BOARD_OUTLINE\n\n" );
+-
+-    // Write out the drill section
+-    bool ok = WriteDrills();
+-
+-    // populate the library (*.emp) file and write the
+-    // PLACEMENT section
+-    if( ok )
+-        ok = IDFLib.WriteFiles( layoutFile, libFile );
+-
+-    fclose( libFile );
+-    libFile = NULL;
+-
+-    fclose( layoutFile );
+-    layoutFile = NULL;
+-
+-    return ok;
+-}
+-
+-
+-bool IDF_BOARD::AddOutline( IDF_OUTLINE& aOutline )
+-{
+-    if( !layoutFile )
+-        return false;
+-
+-    // TODO: check the stream integrity
+-
+-    std::list<IDF_SEGMENT*>::iterator bo;
+-    std::list<IDF_SEGMENT*>::iterator eo;
+-
+-    if( !hasBrdOutlineHdr )
+-    {
+-        fprintf( layoutFile, ".BOARD_OUTLINE ECAD\n%.5f\n", boardThickness );
+-        hasBrdOutlineHdr = true;
+-    }
+-
+-    if( aOutline.size() == 1 )
+-    {
+-        if( !aOutline.front()->IsCircle() )
+-            return false;                   // this is a bad outline
+-
+-        // NOTE: a circle always has an angle of 360, never -360,
+-        // otherwise SolidWorks chokes on the file.
+-        fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                aOutline.front()->startPoint.x, aOutline.front()->startPoint.y );
+-        fprintf( layoutFile, "%d %.5f %.5f 360\n", outlineIndex,
+-                aOutline.front()->endPoint.x, aOutline.front()->endPoint.y );
+-
+-        ++outlineIndex;
+-        return true;
+-    }
+-
+-    // ensure that the very last point is the same as the very first point
+-    aOutline.back()-> endPoint = aOutline.front()->startPoint;
+-
+-    // check if we must reverse things
+-    if( ( aOutline.IsCCW() && ( outlineIndex > 0 ) )
+-        || ( ( !aOutline.IsCCW() ) && ( outlineIndex == 0 ) ) )
+-    {
+-        eo  = aOutline.begin();
+-        bo  = aOutline.end();
+-        --bo;
+-
+-        // for the first item we write out both points
+-        if( aOutline.front()->angle < MIN_ANG && aOutline.front()->angle > -MIN_ANG )
+-        {
+-            fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                    aOutline.front()->endPoint.x, aOutline.front()->endPoint.y );
+-            fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                    aOutline.front()->startPoint.x, aOutline.front()->startPoint.y );
+-        }
+-        else
+-        {
+-            fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                    aOutline.front()->endPoint.x, aOutline.front()->endPoint.y );
+-            fprintf( layoutFile, "%d %.5f %.5f %.5f\n", outlineIndex,
+-                    aOutline.front()->startPoint.x, aOutline.front()->startPoint.y,
+-                    -aOutline.front()->angle );
+-        }
+-
+-        // for all other segments we only write out the start point
+-        while( bo != eo )
+-        {
+-            if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
+-            {
+-                fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                        (*bo)->startPoint.x, (*bo)->startPoint.y );
+-            }
+-            else
+-            {
+-                fprintf( layoutFile, "%d %.5f %.5f %.5f\n", outlineIndex,
+-                        (*bo)->startPoint.x, (*bo)->startPoint.y, -(*bo)->angle );
+-            }
+-
+-            --bo;
+-        }
+-    }
+-    else
+-    {
+-        bo  = aOutline.begin();
+-        eo  = aOutline.end();
+-
+-        // for the first item we write out both points
+-        if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
+-        {
+-            fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                    (*bo)->startPoint.x, (*bo)->startPoint.y );
+-            fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                    (*bo)->endPoint.x, (*bo)->endPoint.y );
+-        }
+-        else
+-        {
+-            fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                    (*bo)->startPoint.x, (*bo)->startPoint.y );
+-            fprintf( layoutFile, "%d %.5f %.5f %.5f\n", outlineIndex,
+-                    (*bo)->endPoint.x, (*bo)->endPoint.y, (*bo)->angle );
+-        }
+-
+-        ++bo;
+-
+-        // for all other segments we only write out the last point
+-        while( bo != eo )
+-        {
+-            if( (*bo)->angle < MIN_ANG && (*bo)->angle > -MIN_ANG )
+-            {
+-                fprintf( layoutFile, "%d %.5f %.5f 0\n", outlineIndex,
+-                        (*bo)->endPoint.x, (*bo)->endPoint.y );
+-            }
+-            else
+-            {
+-                fprintf( layoutFile, "%d %.5f %.5f %.5f\n", outlineIndex,
+-                        (*bo)->endPoint.x, (*bo)->endPoint.y, (*bo)->angle );
+-            }
+-
+-            ++bo;
+-        }
+-    }
+-
+-    ++outlineIndex;
+-
+-    return true;
+-}
+-
+-
+-bool IDF_BOARD::AddDrill( double dia, double x, double y,
+-        IDF3::KEY_PLATING plating,
+-        const std::string refdes,
+-        const std::string holeType,
+-        IDF3::KEY_OWNER owner )
+-{
+-    if( dia < IDF_MIN_DIA * scale )
+-        return false;
+-
+-    IDF_DRILL_DATA* dp = new IDF_DRILL_DATA( dia, x, y, plating, refdes, holeType, owner );
+-    drills.push_back( dp );
+-
+-    return true;
+-}
+-
+-
+-bool IDF_BOARD::AddSlot( double aWidth, double aLength, double aOrientation,
+-        double aX, double aY )
+-{
+-    if( aWidth < IDF_MIN_DIA * scale )
+-        return false;
+-
+-    if( aLength < IDF_MIN_DIA * scale )
+-        return false;
+-
+-    IDF_POINT c[2];     // centers
+-    IDF_POINT pt[4];
+-
+-    double a1 = aOrientation / 180.0 * M_PI;
+-    double a2 = a1 + M_PI2;
+-    double d1 = aLength / 2.0;
+-    double d2 = aWidth / 2.0;
+-    double sa1 = sin( a1 );
+-    double ca1 = cos( a1 );
+-    double dsa2 = d2 * sin( a2 );
+-    double dca2 = d2 * cos( a2 );
+-
+-    c[0].x  = aX + d1 * ca1;
+-    c[0].y  = aY + d1 * sa1;
+-
+-    c[1].x  = aX - d1 * ca1;
+-    c[1].y  = aY - d1 * sa1;
+-
+-    pt[0].x = c[0].x - dca2;
+-    pt[0].y = c[0].y - dsa2;
+-
+-    pt[1].x = c[1].x - dca2;
+-    pt[1].y = c[1].y - dsa2;
+-
+-    pt[2].x = c[1].x + dca2;
+-    pt[2].y = c[1].y + dsa2;
+-
+-    pt[3].x = c[0].x + dca2;
+-    pt[3].y = c[0].y + dsa2;
+-
+-    IDF_OUTLINE outline;
+-
+-    // first straight run
+-    IDF_SEGMENT* seg = new IDF_SEGMENT( pt[0], pt[1] );
+-    outline.push( seg );
+-    // first 180 degree cap
+-    seg = new IDF_SEGMENT( c[1], pt[1], -180.0, true );
+-    outline.push( seg );
+-    // final straight run
+-    seg = new IDF_SEGMENT( pt[2], pt[3] );
+-    outline.push( seg );
+-    // final 180 degree cap
+-    seg = new IDF_SEGMENT( c[0], pt[3], -180.0, true );
+-    outline.push( seg );
+-
+-    return AddOutline( outline );
+-}
+-
+-
+-bool IDF_BOARD::PlaceComponent( const wxString aComponentFile, const std::string aRefDes,
+-                     double aXLoc, double aYLoc, double aZLoc,
+-                     double aRotation, bool isOnTop )
+-{
+-    return IDFLib.PlaceComponent( aComponentFile, aRefDes,
+-                                  aXLoc, aYLoc, aZLoc,
+-                                  aRotation, isOnTop );
+-}
+-
+-
+-std::string IDF_BOARD::GetRefDes( void )
+-{
+-    std::ostringstream ostr;
+-
+-    ostr << "NOREFDES_" << refdesIndex++;
+-
+-    return ostr.str();
+-}
+-
+-
+-bool IDF_BOARD::WriteDrills( void )
+-{
+-    if( !layoutFile )
+-        return false;
+-
+-    // TODO: check the stream integrity and return false as appropriate
+-    if( drills.empty() )
+-        return true;
+-
+-    fprintf( layoutFile, ".DRILLED_HOLES\n" );
+-
+-    std::list<class IDF_DRILL_DATA*>::iterator ds  = drills.begin();
+-    std::list<class IDF_DRILL_DATA*>::iterator de  = drills.end();
+-
+-    while( ds != de )
+-    {
+-        if( !(*ds)->Write( layoutFile ) )
+-            return false;
+-
+-        ++ds;
+-    }
+-
+-    fprintf( layoutFile, ".END_DRILLED_HOLES\n" );
+-
+-    return true;
+-}
+-
+-
+-double IDF_BOARD::GetScale( void )
+-{
+-    return scale;
+-}
+-
+-
+-void IDF_BOARD::SetOffset( double x, double y )
+-{
+-    offsetX = x;
+-    offsetY = y;
+-}
+-
+-
+-void IDF_BOARD::GetOffset( double& x, double& y )
+-{
+-    x = offsetX;
+-    y = offsetY;
+-}
+-
+-
+-IDF_LIB::~IDF_LIB()
+-{
+-    while( !components.empty() )
+-    {
+-        delete components.back();
+-        components.pop_back();
+-    }
+-}
+-
+-
+-bool IDF_LIB::writeLib( FILE* aLibFile )
+-{
+-    if( !aLibFile )
+-        return false;
+-
+-    // TODO: check stream integrity and return false as appropriate
+-
+-    // export models
+-    std::list< IDF_COMP* >::const_iterator mbeg = components.begin();
+-    std::list< IDF_COMP* >::const_iterator mend = components.end();
+-
+-    while( mbeg != mend )
+-    {
+-        if( !(*mbeg)->WriteLib( aLibFile ) )
+-            return false;
+-        ++mbeg;
+-    }
+-
+-    libWritten = true;
+-    return true;
+-}
+-
+-
+-bool IDF_LIB::writeBrd( FILE* aLayoutFile )
+-{
+-    if( !aLayoutFile || !libWritten )
+-        return false;
+-
+-    if( components.empty() )
+-        return true;
+-
+-    // TODO: check stream integrity and return false as appropriate
+-
+-    // write out the board placement information
+-    std::list< IDF_COMP* >::const_iterator mbeg = components.begin();
+-    std::list< IDF_COMP* >::const_iterator mend = components.end();
+-
+-    fprintf( aLayoutFile, "\n.PLACEMENT\n" );
+-
+-    while( mbeg != mend )
+-    {
+-        if( !(*mbeg)->WritePlacement( aLayoutFile ) )
+-            return false;
+-        ++mbeg;
+-    }
+-
+-    fprintf( aLayoutFile, ".END_PLACEMENT\n" );
+-
+-    return true;
+-}
+-
+-
+-bool IDF_LIB::WriteFiles( FILE* aLayoutFile, FILE* aLibFile )
+-{
+-    if( !aLayoutFile || !aLibFile )
+-        return false;
+-
+-    libWritten = false;
+-    regOutlines.clear();
+-
+-    if( !writeLib( aLibFile ) )
+-        return false;
+-
+-    return writeBrd( aLayoutFile );
+-}
+-
+-
+-bool IDF_LIB::RegisterOutline( const std::string aGeomPartString )
+-{
+-    std::set< std::string >::const_iterator it = regOutlines.find( aGeomPartString );
+-
+-    if( it != regOutlines.end() )
+-        return true;
+-
+-    regOutlines.insert( aGeomPartString );
+-
+-    return false;
+-}
+-
+-
+-bool IDF_LIB::PlaceComponent( const wxString aComponentFile, const std::string aRefDes,
+-                                double aXLoc, double aYLoc, double aZLoc,
+-                                double aRotation, bool isOnTop )
+-{
+-    IDF_COMP* comp = new IDF_COMP( this );
+-
+-    if( comp == NULL )
+-    {
+-        std::cerr << "IDF_LIB: *ERROR* could not allocate memory for a component\n";
+-        return false;
+-    }
+-
+-    components.push_back( comp );
+-
+-    if( !comp->PlaceComponent( aComponentFile, aRefDes,
+-                                     aXLoc, aYLoc, aZLoc,
+-                                     aRotation, isOnTop ) )
+-    {
+-        std::cerr << "IDF_LIB: file does not exist (or is symlink):\n";
+-        std::cerr << "   FILE: " << TO_UTF8( aComponentFile ) << "\n";
+-        return false;
+-    }
+-
+-    return true;
+-}
+-
+-
+-IDF_COMP::IDF_COMP( IDF_LIB* aParent )
+-{
+-    parent = aParent;
+-}
+-
+-
+-bool IDF_COMP::PlaceComponent( const wxString aComponentFile, const std::string aRefDes,
+-                               double aXLoc, double aYLoc, double aZLoc,
+-                               double aRotation, bool isOnTop )
+-{
+-    componentFile = aComponentFile;
+-    refdes = aRefDes;
+-
+-    if( refdes.empty() || !refdes.compare( "~" ) || !refdes.compare( "0" ) )
+-        refdes = "NOREFDES";
+-
+-    loc_x = aXLoc;
+-    loc_y = aYLoc;
+-    loc_z = aZLoc;
+-    rotation = aRotation;
+-    top = isOnTop;
+-
+-    wxString fname = wxExpandEnvVars( aComponentFile );
+-
+-    if( !wxFileName::FileExists( fname ) )
+-        return false;
+-
+-    componentFile = fname;
+-
+-    return true;
+-}
+-
+-
+-bool IDF_COMP::WritePlacement( FILE* aLayoutFile )
+-{
+-    if( aLayoutFile == NULL )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* WritePlacement() invoked with aLayoutFile = NULL\n";
+-        return false;
+-    }
+-
+-    if( parent == NULL )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* no valid pointer \n";
+-        return false;
+-    }
+-
+-    if( componentFile.empty() )
+-    {
+-        std::cerr << "IDF_COMP: *BUG* empty componentFile name in WritePlacement()\n";
+-        return false;
+-    }
+-
+-    if( geometry.empty() && partno.empty() )
+-    {
+-        std::cerr << "IDF_COMP: *BUG* geometry and partno strings are empty in WritePlacement()\n";
+-        return false;
+-    }
+-
+-    // TODO: monitor stream integrity and respond accordingly
+-
+-    // PLACEMENT, RECORD 2:
+-    fprintf( aLayoutFile, "\"%s\" \"%s\" \"%s\"\n",
+-             geometry.c_str(), partno.c_str(), refdes.c_str() );
+-
+-    // PLACEMENT, RECORD 3:
+-    if( rotation >= -MIN_ANG && rotation <= -MIN_ANG )
+-    {
+-        fprintf( aLayoutFile, "%.6f %.6f %.6f 0 %s ECAD\n",
+-                 loc_x, loc_y, loc_z, top ? "TOP" : "BOTTOM" );
+-    }
+-    else
+-    {
+-        fprintf( aLayoutFile, "%.6f %.6f %.6f %.3f %s ECAD\n",
+-                 loc_x, loc_y, loc_z, rotation, top ? "TOP" : "BOTTOM" );
+-    }
+-
+-    return true;
+-}
+-
+-
+-bool IDF_COMP::WriteLib( FILE* aLibFile )
+-{
+-    // 1. parse the file for the .ELECTRICAL or .MECHANICAL section
+-    //      and extract the Geometry and PartNumber strings
+-    // 2. Register the name; check if it already exists
+-    // 3. parse the rest of the file until .END_ELECTRICAL or
+-    //      .END_MECHANICAL; validate that each entry conforms
+-    //      to a valid outline
+-    // 4. write lines to library file
+-    //
+-    // NOTE on parsing (the order matters):
+-    //  + store each line which begins with '#'
+-    //  + strip blanks from both ends of the line
+-    //  + drop each blank line
+-    //  + the first non-blank non-comment line must be
+-    //      .ELECTRICAL or .MECHANICAL (as per spec, case does not matter)
+-    //  + the first non-blank line after RECORD 1 must be RECORD 2
+-    //  + following RECORD 2, only blank lines, valid outline entries,
+-    //      and .END_{MECHANICAL,ELECTRICAL} are allowed
+-    //  + only a single outline may be specified; the order may be
+-    //      CW or CCW.
+-    //  + all valid lines are stored and written to the library file
+-    //
+-    // return: false if we do could not write model data; we may return
+-    //  true even if we could not read an IDF file for some reason, provided
+-    //  that the default model was written. In such a case, warnings will be
+-    //  written to stderr.
+-
+-    if( aLibFile == NULL )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* WriteLib() invoked with aLibFile = NULL\n";
+-        return false;
+-    }
+-
+-    if( parent == NULL )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* no valid pointer \n";
+-        return false;
+-    }
+-
+-    if( componentFile.empty() )
+-    {
+-        std::cerr << "IDF_COMP: *BUG* empty componentFile name in WriteLib()\n";
+-        return false;
+-    }
+-
+-    std::list< std::string > records;
+-    std::ifstream model;
+-    std::string fname = TO_UTF8( componentFile );
+-
+-    model.open( fname.c_str(), std::ios_base::in );
+-
+-    if( !model.is_open() )
+-    {
+-        std::cerr << "* IDF EXPORT: could not open file " << fname << "\n";
+-        return substituteComponent( aLibFile );
+-    }
+-
+-    std::string entryType;  // will be one of ELECTRICAL or MECHANICAL
+-    std::string endMark;    // will be one of .END_ELECTRICAL or .END_MECHANICAL
+-    std::string iline;      // the input line
+-    int state = 1;
+-    bool isComment;         // true if a line just read in is a comment line
+-    bool isNewItem = false; // true if the outline is a previously unsaved IDF item
+-
+-    // some vars for parsing record 3
+-    int    loopIdx = -1;        // direction of points in outline (0=CW, 1=CCW, -1=no points yet)
+-    double firstX;
+-    double firstY;
+-    bool   lineClosed = false;  // true when outline has been closed; only one outline is permitted
+-
+-    while( state )
+-    {
+-        while( !FetchIDFLine( model, iline, isComment ) && model.good() );
+-
+-        if( !model.good() )
+-        {
+-            // this should not happen; we should at least
+-            // have encountered the .END_ statement;
+-            // however, we shall make a concession if the
+-            // last line is an .END_ statement which had
+-            // not been correctly terminated
+-            if( !endMark.empty() && !strncasecmp( iline.c_str(), endMark.c_str(), 15 ) )
+-            {
+-                std::cerr << "IDF EXPORT: *WARNING* IDF file is not properly terminated\n";
+-                std::cerr << "*     FILE: " << fname << "\n";
+-                records.push_back( endMark );
+-                break;
+-            }
+-
+-            std::cerr << "IDF EXPORT: *ERROR* faulty IDF file\n";
+-            std::cerr << "*     FILE: " << fname << "\n";
+-            return substituteComponent( aLibFile );
+-        }
+-
+-        switch( state )
+-        {
+-            case 1:
+-                // accept comment lines, .ELECTRICAL, or .MECHANICAL;
+-                // all others are simply ignored
+-                if( isComment )
+-                {
+-                    records.push_back( iline );
+-                    break;
+-                }
+-
+-                if( !strncasecmp( iline.c_str(), ".electrical", 11 ) )
+-                {
+-                    entryType = ".ELECTRICAL";
+-                    endMark   = ".END_ELECTRICAL";
+-                    records.push_back( entryType );
+-                    state = 2;
+-                    break;
+-                }
+-
+-                if( !strncasecmp( iline.c_str(), ".mechanical", 11 ) )
+-                {
+-                    entryType = ".MECHANICAL";
+-                    endMark   = ".END_MECHANICAL";
+-                    records.push_back( entryType );
+-                    state = 2;
+-                    break;
+-                }
+-
+-                break;
+-
+-            case 2:
+-                // accept only a RECORD 2 compliant line;
+-                // anything else constitutes a malformed IDF file
+-                if( isComment )
+-                {
+-                    std::cerr << "IDF EXPORT: bad IDF file\n";
+-                    std::cerr << "*     LINE: " << iline << "\n";
+-                    std::cerr << "*     FILE: " << fname << "\n";
+-                    std::cerr << "*   REASON: comment within "
+-                              << entryType << " section\n";
+-                    model.close();
+-                    return substituteComponent( aLibFile );
+-                }
+-
+-                if( !parseRec2( iline, isNewItem ) )
+-                {
+-                    std::cerr << "IDF EXPORT: bad IDF file\n";
+-                    std::cerr << "*     LINE: " << iline << "\n";
+-                    std::cerr << "*     FILE: " << fname << "\n";
+-                    std::cerr << "*   REASON: expecting RECORD 2 of "
+-                              << entryType << " section\n";
+-                    model.close();
+-                    return substituteComponent( aLibFile );
+-                }
+-
+-                if( isNewItem )
+-                {
+-                    records.push_back( iline );
+-                    state = 3;
+-                }
+-                else
+-                {
+-                    model.close();
+-                    return true;
+-                }
+-
+-                break;
+-
+-            case 3:
+-                // accept outline entries or end of section
+-                if( isComment )
+-                {
+-                    std::cerr << "IDF EXPORT: bad IDF file\n";
+-                    std::cerr << "*     LINE: " << iline << "\n";
+-                    std::cerr << "*     FILE: " << fname << "\n";
+-                    std::cerr << "*   REASON: comment within "
+-                              << entryType << " section\n";
+-                    model.close();
+-                    return substituteComponent( aLibFile );
+-                }
+-
+-                if( !strncasecmp( iline.c_str(), endMark.c_str(), 15 ) )
+-                {
+-                    records.push_back( endMark );
+-                    state = 0;
+-                    break;
+-                }
+-
+-                if( lineClosed )
+-                {
+-                    // there should be no further points
+-                    std::cerr << "IDF EXPORT: faulty IDF file\n";
+-                    std::cerr << "*     LINE: " << iline << "\n";
+-                    std::cerr << "*     FILE: " << fname << "\n";
+-                    std::cerr << "*   REASON: more than 1 outline in "
+-                              << entryType << " section\n";
+-                    model.close();
+-                    return substituteComponent( aLibFile );
+-                }
+-
+-                if( !parseRec3( iline, loopIdx, firstX, firstY, lineClosed ) )
+-                {
+-                    std::cerr << "IDF EXPORT: unexpected line in IDF file\n";
+-                    std::cerr << "*     LINE: " << iline << "\n";
+-                    std::cerr << "*     FILE: " << fname << "\n";
+-                    model.close();
+-                    return substituteComponent( aLibFile );
+-                }
+-
+-                records.push_back( iline );
+-                break;
+-
+-            default:
+-                std::cerr << "IDF EXPORT: BUG in " << __FUNCTION__ << ": unexpected state\n";
+-                model.close();
+-                return substituteComponent( aLibFile );
+-                break;
+-        }   // switch( state )
+-    }       // while( state )
+-
+-    model.close();
+-
+-    if( !lineClosed )
+-    {
+-        std::cerr << "IDF EXPORT: component outline not closed\n";
+-        std::cerr << "*     FILE: " << fname << "\n";
+-        return substituteComponent( aLibFile );
+-    }
+-
+-    std::list< std::string >::iterator lbeg = records.begin();
+-    std::list< std::string >::iterator lend = records.end();
+-
+-    // TODO: check stream integrity
+-    while( lbeg != lend )
+-    {
+-        fprintf( aLibFile, "%s\n", lbeg->c_str() );
+-        ++lbeg;
+-    }
+-    fprintf( aLibFile, "\n" );
+-
+-    return true;
+-}
+-
+-
+-bool IDF_COMP::substituteComponent( FILE* aLibFile )
+-{
+-    // the component outline does not exist or could not be
+-    // read; substitute a placeholder
+-
+-    // TODO: check the stream integrity
+-    geometry = "NOGEOM";
+-    partno   = "NOPART";
+-
+-    if( parent->RegisterOutline( "NOGEOM_NOPART" ) )
+-        return true;
+-
+-    // Create a star shape 5mm high with points on 5 and 2.5 mm circles
+-    fprintf( aLibFile, ".ELECTRICAL\n" );
+-    fprintf( aLibFile, "\"NOGEOM\" \"NOPART\" MM 5\n" );
+-
+-    double a, da, x, y;
+-    da = M_PI / 5.0;
+-    a = da / 2.0;
+-
+-    for( int i = 0; i < 10; ++i )
+-    {
+-        if( i & 1 )
+-        {
+-            x = 2.5 * cos( a );
+-            y = 2.5 * sin( a );
+-        }
+-        else
+-        {
+-            x = 1.5 * cos( a );
+-            y = 1.5 * sin( a );
+-        }
+-
+-        a += da;
+-        fprintf( aLibFile, "0 %.3f %.3f 0\n", x, y );
+-    }
+-
+-    a = da / 2.0;
+-    x = 1.5 * cos( a );
+-    y = 1.5 * sin( a );
+-    fprintf( aLibFile, "0 %.3f %.3f 0\n", x, y );
+-    fprintf( aLibFile, ".END_ELECTRICAL\n\n" );
+-
+-    return true;
+-}
+-
+-
+-bool IDF_COMP::parseRec2( const std::string aLine, bool& isNewItem )
+-{
+-    // RECORD 2:
+-    // + "Geometry Name"
+-    // + "Part Number"
+-    // + MM or THOU
+-    // + height (float)
+-
+-    isNewItem = false;
+-
+-    int idx = 0;
+-    bool quoted = false;
+-    std::string entry;
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2 in model file (no Geometry Name entry)\n";
+-        return false;
+-    }
+-
+-    geometry = entry;
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2 in model file (no Part No. entry)\n";
+-        return false;
+-    }
+-
+-    partno = entry;
+-
+-    if( geometry.empty() && partno.empty() )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2 in model file\n";
+-        std::cerr << "          Geometry Name and Part Number are both empty.\n";
+-        return false;
+-    }
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2, missing FIELD 3\n";
+-        return false;
+-    }
+-
+-    if( strcasecmp( "MM", entry.c_str() ) && strcasecmp( "THOU", entry.c_str() ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2, invalid FIELD 3 \""
+-                  << entry << "\"\n";
+-        return false;
+-    }
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2, missing FIELD 4\n";
+-        return false;
+-    }
+-
+-    if( quoted )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2, invalid FIELD 4 (quoted)\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    // ensure that we have a valid value
+-    double val;
+-    std::stringstream teststr;
+-    teststr << entry;
+-
+-    if( !( teststr >> val ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 2, invalid FIELD 4 (must be numeric)\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    teststr.clear();
+-    teststr << geometry << "_" << partno;
+-
+-    if( !parent->RegisterOutline( teststr.str() ) )
+-        isNewItem = true;
+-
+-    return true;
+-}
+-
+-
+-bool IDF_COMP::parseRec3( const std::string aLine, int& aLoopIndex,
+-                          double& aX, double& aY, bool& aClosed )
+-{
+-    // RECORD 3:
+-    // + 0,1 (loop label)
+-    // + X coord (float)
+-    // + Y coord (float)
+-    // + included angle (0 for line, +ang for CCW, -ang for CW, +360 for circle)
+-    //
+-    // notes:
+-    // 1. first entry may not be a circle or arc
+-    // 2. it would be nice, but not essential, to ensure that the
+-    //      winding is indeed as specified by the loop label
+-    //
+-
+-    double x, y, ang;
+-    bool ccw    = false;
+-    bool quoted = false;
+-    int idx = 0;
+-    std::string entry;
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, no data\n";
+-        return false;
+-    }
+-
+-    if( quoted )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 1 is quoted\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( entry.compare( "0" ) && entry.compare( "1" ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 1 is invalid (must be 0 or 1)\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( !entry.compare( "0" ) )
+-        ccw = true;
+-
+-    if( aLoopIndex == 0 && !ccw )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, LOOP INDEX changed from 0 to 1\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( aLoopIndex == 1 && ccw )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, LOOP INDEX changed from 1 to 0\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 2 does not exist\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( quoted )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 2 is quoted\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    std::stringstream tstr;
+-    tstr.str( entry );
+-
+-    if( !(tstr >> x ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, invalid X value in FIELD 2\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 3 does not exist\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( quoted )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 3 is quoted\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    tstr.clear();
+-    tstr.str( entry );
+-
+-    if( !(tstr >> y ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, invalid Y value in FIELD 3\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( !GetIDFString( aLine, entry, quoted, idx ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 4 does not exist\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( quoted )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, FIELD 4 is quoted\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    tstr.clear();
+-    tstr.str( entry );
+-
+-    if( !(tstr >> ang ) )
+-    {
+-        std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, invalid ANGLE value in FIELD 3\n";
+-        std::cerr << "    LINE: " << aLine << "\n";
+-        return false;
+-    }
+-
+-    if( aLoopIndex == -1 )
+-    {
+-        // this is the first point; there are some special checks
+-        aLoopIndex = ccw ? 0 : 1;
+-        aX = x;
+-        aY = y;
+-        aClosed = false;
+-
+-        // ensure that the first point is not an arc specification
+-        if( ang < -MIN_ANG || ang > MIN_ANG )
+-        {
+-            std::cerr << "IDF_COMP: *ERROR* invalid RECORD 3, first point has non-zero angle\n";
+-            std::cerr << "    LINE: " << aLine << "\n";
+-            return false;
+-        }
+-    }
+-    else
+-    {
+-        // does this close the outline?
+-        if( ang < 0.0 ) ang = -ang;
+-
+-        ang -= 360.0;
+-
+-        if( ang > -MIN_ANG && ang < MIN_ANG )
+-        {
+-            // this is  a circle; the loop is closed
+-            aClosed = true;
+-        }
+-        else
+-        {
+-            x = (aX - x) * (aX - x);
+-            y = (aY - y) * (aY - y) + x;
+-
+-            if( y <= 1e-6 )
+-            {
+-                // the points are close enough; the loop is closed
+-                aClosed = true;
+-            }
+-        }
+-    }
+-
+-    // NOTE:
+-    // 1. ideally we would ensure that there are no arcs with a radius of 0; this entails
+-    //    actively calculating the last point as the previous entry could have been an instruction
+-    //    to create an arc. This check is sacrificed in the interest of speed.
+-    // 2. a bad outline can be crafted by giving at least one valid segment and then introducing
+-    //    a circle; such a condition is not checked for here in the interest of speed.
+-    // 3. a circle specified with an angle of -360 is invalid, but that condition is not
+-    //    tested here.
+-
+-    return true;
+-}
+-
+-
+-// fetch a line from the given input file and trim the ends
+-static bool FetchIDFLine( std::ifstream& aModel, std::string& aLine, bool& isComment )
+-{
+-    aLine = "";
+-    std::getline( aModel, aLine );
+-
+-    isComment = false;
+-
+-    // A comment begins with a '#' and must be the first character on the line
+-    if( aLine[0] == '#' )
+-        isComment = true;
+-
+-
+-    while( !aLine.empty() && isspace( *aLine.begin() ) )
+-        aLine.erase( aLine.begin() );
+-
+-    while( !aLine.empty() && isspace( *aLine.rbegin() ) )
+-        aLine.erase( --aLine.end() );
+-
+-    if( aLine.empty() )
+-        return false;
+-
+-    return true;
+-}
+-
+-
+-// extract an IDF string and move the index to point to the character after the substring
+-static bool GetIDFString( const std::string& aLine, std::string& aIDFString,
+-                          bool& hasQuotes, int& aIndex )
+-{
+-    // 1. drop all leading spaces
+-    // 2. if the first character is '"', read until the next '"',
+-    //    otherwise read until the next space or EOL.
+-
+-    std::ostringstream ostr;
+-
+-    int len = aLine.length();
+-    int idx = aIndex;
+-
+-    if( idx < 0 || idx >= len )
+-        return false;
+-
+-    while( isspace( aLine[idx] ) && idx < len ) ++idx;
+-
+-    if( idx == len )
+-    {
+-        aIndex = idx;
+-        return false;
+-    }
+-
+-    if( aLine[idx] == '"' )
+-    {
+-        hasQuotes = true;
+-        ++idx;
+-        while( aLine[idx] != '"' && idx < len )
+-            ostr << aLine[idx++];
+-
+-        if( idx == len )
+-        {
+-            std::cerr << "GetIDFString(): *ERROR*: unterminated quote mark in line:\n";
+-            std::cerr << "LINE: " << aLine << "\n";
+-            aIndex = idx;
+-            return false;
+-        }
+-
+-        ++idx;
+-    }
+-    else
+-    {
+-        hasQuotes = false;
+-
+-        while( !isspace( aLine[idx] ) && idx < len )
+-            ostr << aLine[idx++];
+-
+-    }
+-
+-    aIDFString = ostr.str();
+-    aIndex = idx;
+-
+-    return true;
+-}
+
+=== removed file 'pcbnew/exporters/idf.h'
+--- pcbnew/exporters/idf.h	2014-05-18 15:16:59 +0000
++++ pcbnew/exporters/idf.h	1970-01-01 00:00:00 +0000
+@@ -1,321 +0,0 @@
+-/**
+- * @file idf.h
+- */
+-
+-/*
+- * This program source code file is part of KiCad, a free EDA CAD application.
+- *
+- * Copyright (C) 2013-2014  Cirilo Bernardo
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * as published by the Free Software Foundation; either version 2
+- * of the License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, you may find one here:
+- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+- * or you may search the http://www.gnu.org website for the version 2 license,
+- * or you may write to the Free Software Foundation, Inc.,
+- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+- */
+-
+-#ifndef IDF_H
+-#define IDF_H
+-
+-#include <wx/string.h>
+-#include <set>
+-#include <string>
+-#include <idf_common.h>
+-
+-
+-/**
+- * @Class IDF_COMP
+- * is responsible for parsing individual component files and rewriting relevant
+- * data to a library file.
+- */
+-class IDF_COMP
+-{
+-private:
+-    /// filename (full path) of the IDF component footprint
+-    wxString componentFile;
+-
+-    /// reference designator; a valid designator or NOREFDES
+-    std::string refdes;
+-
+-    /// overall translation of the part (component location + 3D offset)
+-    double loc_x;
+-    double loc_y;
+-    double loc_z;
+-
+-    /// overall rotation of the part (3D Z rotation + component rotation)
+-    double rotation;
+-
+-    /// true if the component is on the top of the board
+-    bool top;
+-
+-    /// geometry of the package; for example, HORIZ, VERT, "HORIZ 0.2 inch"
+-    std::string geometry;
+-
+-    /// package name or part number; for example "TO92" or "BC107"
+-    std::string partno;
+-
+-    /// the owning IDF_LIB instance
+-    IDF_LIB* parent;
+-
+-    /**
+-     * Function substituteComponent
+-     * places a substitute component footprint into the library file
+-     * and creates an appropriate entry for the PLACEMENT section
+-     * @param aLibFile is the library file to write to
+-     * @return bool: true if data was successfully written
+-     */
+-    bool substituteComponent( FILE* aLibFile );
+-
+-    // parse RECORD 2; return TRUE if all is OK, otherwise FALSE
+-    bool parseRec2( const std::string aLine, bool& isNewItem );
+-
+-    // parse RECORD 3; return TRUE if all is OK, otherwise FALSE
+-    bool parseRec3( const std::string aLine, int& aLoopIndex,
+-                    double& aX, double& aY, bool& aClosed );
+-
+-public:
+-    IDF_COMP( IDF_LIB* aParent );
+-
+-    /**
+-     * Function PlaceComponent
+-     * specifies the parameters of an IDF component outline placed on the board
+-     * @param aComponentFile is the IDF component file to include
+-     * @param aRefDes is the component reference designator; an empty string,
+-     *                '~' or '0' all default to "NOREFDES".
+-     * @param aLocation is the overall translation of the part (board location + 3D offset)
+-     * @param aRotation is the overall rotation of the part (component rotation + 3D Z rotation)
+-     * @return bool: true if the specified component file exists
+-     */
+-    bool PlaceComponent( const wxString aComponentFile, const std::string aRefDes,
+-                         double aXLoc, double aYLoc, double aZLoc,
+-                         double aRotation, bool isOnTop );
+-
+-    /**
+-     * Function WriteLib
+-     * parses the model file to extract information needed by the
+-     * PLACEMENT section and writes data (if necessary) to the
+-     * library file
+-     * @param aLibFile is the library file to write to
+-     * @return bool: true if data was successfully written
+-     */
+-    bool WriteLib( FILE* aLibFile );
+-
+-    /**
+-     * Function WritePlacement
+-     * write the .PLACEMENT data of the component to the IDF board @param aLayoutFile
+-     * @return bool: true if data was successfully written
+-     */
+-    bool WritePlacement( FILE* aLayoutFile );
+-};
+-
+-
+-/**
+- * @Class IDF_LIB
+- * stores information on IDF models ( also has an inbuilt NOMODEL model )
+- * and is responsible for writing the ELECTRICAL sections of the library file
+- * (*.emp) and the PLACEMENT section of the board file.
+- */
+-class IDF_LIB
+-{
+-    /// a list of component outline names and a flag to indicate their save state
+-    std::set< std::string > regOutlines;
+-    std::list< IDF_COMP* > components;
+-    bool libWritten;
+-
+-    /**
+-     * Function writeLib
+-     * writes all current library information to the output file
+-     */
+-    bool writeLib( FILE* aLibFile );
+-
+-    /**
+-     * Function writeBrd
+-     * write placement information to the board file
+-     */
+-    bool writeBrd( FILE* aLayoutFile );
+-
+-public:
+-    virtual ~IDF_LIB();
+-
+-    /**
+-     * Function WriteFiles
+-     * writes the library entries to the *.emp file (aLibFile) and the
+-     * .PLACEMENT section to the *.emn file (aLayoutFile)
+-     * @param aLayoutFile IDF board file
+-     * @param aLibFile IDF library file
+-     * @return bool: true if all data was written successfully
+-     */
+-    bool WriteFiles( FILE* aLayoutFile, FILE* aLibFile );
+-
+-    /**
+-     * Function RegisterOutline
+-     * adds the given string to a list of current outline entities.
+-     * @param aGeomPartString is a concatenation of the IDF component's
+-     * geometry name and part name; this is used as a unique identifier
+-     * to prevent redundant entries in the library output.
+-     * @return bool: true if the string was already registered,
+-     * false if it is a new registration.
+-     */
+-    bool RegisterOutline( const std::string aGeomPartString );
+-
+-    bool PlaceComponent( const wxString  aComponentFile, const std::string aRefDes,
+-                         double aXLoc, double aYLoc, double aZLoc,
+-                         double aRotation, bool isOnTop );
+-};
+-
+-
+-/**
+- * @Class IDF_BOARD
+- * contains objects necessary for the maintenance of the IDF board and library files.
+- */
+-class IDF_BOARD
+-{
+-private:
+-    IDF_LIB IDFLib;                         ///< IDF library manager
+-    std::list<IDF_DRILL_DATA*> drills;      ///< IDF drill data
+-    int outlineIndex;                       ///< next outline index to use
+-    bool useThou;                           ///< true if output is THOU
+-    double scale;                           ///< scale from KiCad IU to IDF output units
+-    double boardThickness;                  ///< total thickness of the PCB
+-    bool hasBrdOutlineHdr;                  ///< true when a board outline header has been written
+-    int refdesIndex;                        ///< index to generate REFDES for modules which have none
+-
+-    double offsetX;                         ///< offset to roughly center the board on the world origin
+-    double offsetY;
+-
+-    FILE* layoutFile;                       ///< IDF board file (*.emn)
+-    FILE* libFile;                          ///< IDF library file (*.emp)
+-
+-    /**
+-     * Function Write
+-     * outputs a .DRILLED_HOLES section compliant with the
+-     * IDFv3 specification.
+-     * @param aLayoutFile : open file (*.emn) for output
+-     */
+-    bool WriteDrills( void );
+-
+-public:
+-    IDF_BOARD();
+-
+-    ~IDF_BOARD();
+-
+-    // Set up the output files and scale factor;
+-    // return TRUE if everything is OK
+-    bool Setup( wxString aBoardName, wxString aFullFileName, bool aUseThou, int aBoardThickness );
+-
+-    // Finish a board
+-    // Write out all current data and close files.
+-    // Return true for success
+-    bool Finish( void );
+-
+-    /**
+-     * Function GetScale
+-     * returns the output scaling factor
+-     */
+-    double GetScale( void );
+-
+-    /**
+-     * Function SetOffset
+-     * sets the global coordinate offsets
+-     */
+-    void SetOffset( double x, double y );
+-
+-    /**
+-     * Function GetOffset
+-     * returns the global coordinate offsets
+-     */
+-    void GetOffset( double& x, double& y );
+-
+-    // Add an outline; the very first outline is the board perimeter;
+-    // all additional outlines are cutouts.
+-    bool AddOutline( IDF_OUTLINE& aOutline );
+-
+-    /**
+-     * Function AddDrill
+-     * creates a drill entry and adds it to the list of PCB holes
+-     * @param dia : drill diameter
+-     * @param x : X coordinate of the drill center
+-     * @param y : Y coordinate of the drill center
+-     * @param plating : flag, PTH or NPTH
+-     * @param refdes : component Reference Designator
+-     * @param holetype : purpose of hole
+-     * @param owner : one of MCAD, ECAD, UNOWNED
+-     */
+-    bool AddDrill( double dia, double x, double y,
+-            IDF3::KEY_PLATING plating,
+-            const std::string refdes,
+-            const std::string holeType,
+-            IDF3::KEY_OWNER owner );
+-
+-    /**
+-     * Function AddSlot
+-     * creates a slot cutout within the IDF BOARD section; this is a deficient representation
+-     * of a KiCad 'oval' drill; IDF is unable to represent a plated slot and unable to
+-     * represent the Reference Designator association with a slot.
+-     */
+-    bool AddSlot( double aWidth, double aLength, double aOrientation, double aX, double aY );
+-
+-    bool PlaceComponent( const wxString aComponentFile, const std::string aRefDes,
+-                         double aXLoc, double aYLoc, double aZLoc,
+-                         double aRotation, bool isOnTop );
+-
+-    std::string GetRefDes( void );
+-};
+-
+-
+-/**
+- * @Class IDF_DRILL_DATA
+- * contains information describing a drilled hole and is responsible for
+- * writing this information to a file in compliance with the IDFv3 specification.
+- */
+-class IDF_DRILL_DATA
+-{
+-private:
+-    double dia;
+-    double x;
+-    double y;
+-    IDF3::KEY_PLATING plating;
+-    IDF3::KEY_REFDES kref;
+-    IDF3::KEY_HOLETYPE khole;
+-    std::string refdes;
+-    std::string holetype;
+-    IDF3::KEY_OWNER owner;
+-
+-public:
+-    /**
+-     * Constructor IDF_DRILL_DATA
+-     * creates a drill entry with information compliant with the
+-     * IDFv3 specifications.
+-     * @param aDrillDia : drill diameter
+-     * @param aPosX : X coordinate of the drill center
+-     * @param aPosY : Y coordinate of the drill center
+-     * @param aPlating : flag, PTH or NPTH
+-     * @param aRefDes : component Reference Designator
+-     * @param aHoleType : purpose of hole
+-     * @param aOwner : one of MCAD, ECAD, UNOWNED
+-     */
+-    IDF_DRILL_DATA( double aDrillDia, double aPosX, double aPosY,
+-            IDF3::KEY_PLATING aPlating,
+-            const std::string aRefDes,
+-            const std::string aHoleType,
+-            IDF3::KEY_OWNER aOwner );
+-
+-    /**
+-     * Function Write
+-     * writes a single line representing the hole within a .DRILLED_HOLES section
+-     */
+-    bool Write( FILE* aLayoutFile );
+-};
+-
+-#endif  // IDF_H
+
+=== removed file 'pcbnew/exporters/idf_common.cpp'
+--- pcbnew/exporters/idf_common.cpp	2014-02-05 09:27:21 +0000
++++ pcbnew/exporters/idf_common.cpp	1970-01-01 00:00:00 +0000
+@@ -1,484 +0,0 @@
+-/**
+- * file: idf_common.cpp
+- *
+- * This program source code file is part of KiCad, a free EDA CAD application.
+- *
+- * Copyright (C) 2013-2014  Cirilo Bernardo
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * as published by the Free Software Foundation; either version 2
+- * of the License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, you may find one here:
+- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+- * or you may search the http://www.gnu.org website for the version 2 license,
+- * or you may write to the Free Software Foundation, Inc.,
+- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+- */
+-
+-#include <list>
+-#include <string>
+-#include <iostream>
+-#include <cstdio>
+-#include <cmath>
+-#include <richio.h>
+-#include <idf_common.h>
+-#include <build_version.h>
+-
+-#ifdef DEBUG_IDF
+-void IDF3::PrintSeg( IDF_SEGMENT* aSegment )
+-{
+-    if( aSegment->IsCircle() )
+-    {
+-        fprintf(stdout, "printSeg(): CIRCLE: C(%.3f, %.3f) P(%.3f, %.3f) rad. %.3f\n",
+-                aSegment->startPoint.x, aSegment->startPoint.y,
+-                aSegment->endPoint.x, aSegment->endPoint.y,
+-                aSegment->radius );
+-        return;
+-    }
+-
+-    if( aSegment->angle < -MIN_ANG || aSegment->angle > MIN_ANG )
+-    {
+-        fprintf(stdout, "printSeg(): ARC: p1(%.3f, %.3f) p2(%.3f, %.3f) ang. %.3f\n",
+-                aSegment->startPoint.x, aSegment->startPoint.y,
+-                aSegment->endPoint.x, aSegment->endPoint.y,
+-                aSegment->angle );
+-        return;
+-    }
+-
+-    fprintf(stdout, "printSeg(): LINE: p1(%.3f, %.3f) p2(%.3f, %.3f)\n",
+-            aSegment->startPoint.x, aSegment->startPoint.y,
+-            aSegment->endPoint.x, aSegment->endPoint.y );
+-
+-    return;
+-}
+-#endif
+-
+-
+-bool IDF_POINT::Matches( const IDF_POINT& aPoint, double aRadius )
+-{
+-    double dx = x - aPoint.x;
+-    double dy = y - aPoint.y;
+-
+-    double d2 = dx * dx + dy * dy;
+-
+-    if( d2 <= aRadius * aRadius )
+-        return true;
+-
+-    return false;
+-}
+-
+-
+-double IDF_POINT::CalcDistance( const IDF_POINT& aPoint ) const
+-{
+-    double dx   = aPoint.x - x;
+-    double dy   = aPoint.y - y;
+-    double dist = sqrt( dx * dx + dy * dy );
+-
+-    return dist;
+-}
+-
+-
+-double IDF3::CalcAngleRad( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
+-{
+-    return atan2( aEndPoint.y - aStartPoint.y, aEndPoint.x - aStartPoint.x );
+-}
+-
+-
+-double IDF3::CalcAngleDeg( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
+-{
+-    double ang = CalcAngleRad( aStartPoint, aEndPoint );
+-
+-    // round to thousandths of a degree
+-    int iang = int (ang / M_PI * 1800000.0);
+-
+-    ang = iang / 10000.0;
+-
+-    return ang;
+-}
+-
+-
+-void IDF3::GetOutline( std::list<IDF_SEGMENT*>& aLines,
+-                       IDF_OUTLINE& aOutline )
+-{
+-    aOutline.Clear();
+-
+-    // NOTE: To tell if the point order is CCW or CW,
+-    // sum all:  (endPoint.X[n] - startPoint.X[n])*(endPoint[n] + startPoint.Y[n])
+-    // If the result is >0, the direction is CW, otherwise
+-    // it is CCW. Note that the result cannot be 0 unless
+-    // we have a bounded area of 0.
+-
+-    // First we find the segment with the leftmost point
+-    std::list<IDF_SEGMENT*>::iterator bl    = aLines.begin();
+-    std::list<IDF_SEGMENT*>::iterator el    = aLines.end();
+-    std::list<IDF_SEGMENT*>::iterator idx   = bl++;       // iterator for the object with minX
+-
+-    double minx = (*idx)->GetMinX();
+-    double curx;
+-
+-    while( bl != el )
+-    {
+-        curx = (*bl)->GetMinX();
+-
+-        if( curx < minx )
+-        {
+-            minx = curx;
+-            idx = bl;
+-        }
+-
+-        ++bl;
+-    }
+-
+-    aOutline.push( *idx );
+-#ifdef DEBUG_IDF
+-    PrintSeg( *idx );
+-#endif
+-    aLines.erase( idx );
+-
+-    // If the item is a circle then we're done
+-    if( aOutline.front()->IsCircle() )
+-        return;
+-
+-    // Assemble the loop
+-    bool complete = false;  // set if loop is complete
+-    bool matched;           // set if a segment's end point was matched
+-
+-    while( !complete )
+-    {
+-        matched = false;
+-        bl  = aLines.begin();
+-        el  = aLines.end();
+-
+-        while( bl != el && !matched )
+-        {
+-            if( (*bl)->MatchesStart( aOutline.back()->endPoint ) )
+-            {
+-                if( (*bl)->IsCircle() )
+-                {
+-                    // a circle on the perimeter is pathological but we just ignore it
+-                    ++bl;
+-                }
+-                else
+-                {
+-                    matched = true;
+-#ifdef DEBUG_IDF
+-                    PrintSeg( *bl );
+-#endif
+-                    aOutline.push( *bl );
+-                    aLines.erase( bl );
+-                }
+-
+-                continue;
+-            }
+-
+-            ++bl;
+-        }
+-
+-        if( !matched )
+-        {
+-            // attempt to match the end points
+-            bl  = aLines.begin();
+-            el  = aLines.end();
+-
+-            while( bl != el && !matched )
+-            {
+-                if( (*bl)->MatchesEnd( aOutline.back()->endPoint ) )
+-                {
+-                    if( (*bl)->IsCircle() )
+-                    {
+-                        // a circle on the perimeter is pathological but we just ignore it
+-                        ++bl;
+-                    }
+-                    else
+-                    {
+-                        matched = true;
+-                        (*bl)->SwapEnds();
+-#ifdef DEBUG_IDF
+-                        printSeg( *bl );
+-#endif
+-                        aOutline.push( *bl );
+-                        aLines.erase( bl );
+-                    }
+-
+-                    continue;
+-                }
+-
+-                ++bl;
+-            }
+-        }
+-
+-        if( !matched )
+-        {
+-            // still no match - attempt to close the loop
+-            if( (aOutline.size() > 1) || ( aOutline.front()->angle < -MIN_ANG )
+-                || ( aOutline.front()->angle > MIN_ANG ) )
+-            {
+-                // close the loop
+-                IDF_SEGMENT* seg = new IDF_SEGMENT( aOutline.back()->endPoint,
+-                                                    aOutline.front()->startPoint );
+-
+-                if( seg )
+-                {
+-                    complete = true;
+-#ifdef DEBUG_IDF
+-                    printSeg( seg );
+-#endif
+-                    aOutline.push( seg );
+-                    break;
+-                }
+-            }
+-
+-            // the outline is bad; drop the segments
+-            aOutline.Clear();
+-
+-            return;
+-        }
+-
+-        // check if the loop is complete
+-        if( aOutline.front()->MatchesStart( aOutline.back()->endPoint ) )
+-        {
+-            complete = true;
+-            break;
+-        }
+-    }
+-}
+-
+-
+-IDF_SEGMENT::IDF_SEGMENT()
+-{
+-    angle = 0.0;
+-    offsetAngle = 0.0;
+-    radius = 0.0;
+-}
+-
+-
+-IDF_SEGMENT::IDF_SEGMENT( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint )
+-{
+-    angle = 0.0;
+-    offsetAngle = 0.0;
+-    radius = 0.0;
+-    startPoint = aStartPoint;
+-    endPoint = aEndPoint;
+-}
+-
+-
+-IDF_SEGMENT::IDF_SEGMENT( const IDF_POINT& aStartPoint,
+-                          const IDF_POINT& aEndPoint,
+-                          double aAngle,
+-                          bool aFromKicad )
+-{
+-    double diff = abs( aAngle ) - 360.0;
+-
+-    if( ( diff < MIN_ANG
+-        && diff > -MIN_ANG ) || ( aAngle < MIN_ANG && aAngle > -MIN_ANG ) || (!aFromKicad) )
+-    {
+-        angle = 0.0;
+-        startPoint = aStartPoint;
+-        endPoint = aEndPoint;
+-
+-        if( diff < MIN_ANG && diff > -MIN_ANG )
+-        {
+-            angle = 360.0;
+-            center = aStartPoint;
+-            offsetAngle = 0.0;
+-            radius = aStartPoint.CalcDistance( aEndPoint );
+-        }
+-        else if( aAngle < MIN_ANG && aAngle > -MIN_ANG )
+-        {
+-            CalcCenterAndRadius();
+-        }
+-
+-        return;
+-    }
+-
+-    // we need to convert from the KiCad arc convention
+-    angle = aAngle;
+-
+-    center = aStartPoint;
+-
+-    offsetAngle = IDF3::CalcAngleDeg( aStartPoint, aEndPoint );
+-
+-    radius = aStartPoint.CalcDistance( aEndPoint );
+-
+-    startPoint = aEndPoint;
+-
+-    double ang = offsetAngle + aAngle;
+-    ang = (ang / 180.0) * M_PI;
+-
+-    endPoint.x  = ( radius * cos( ang ) ) + center.x;
+-    endPoint.y  = ( radius * sin( ang ) ) + center.y;
+-}
+-
+-
+-bool IDF_SEGMENT::MatchesStart( const IDF_POINT& aPoint, double aRadius )
+-{
+-    return startPoint.Matches( aPoint, aRadius );
+-}
+-
+-
+-bool IDF_SEGMENT::MatchesEnd( const IDF_POINT& aPoint, double aRadius )
+-{
+-    return endPoint.Matches( aPoint, aRadius );
+-}
+-
+-
+-void IDF_SEGMENT::CalcCenterAndRadius( void )
+-{
+-    // NOTE:  this routine does not check if the points are the same
+-    // or too close to be sensible in a production setting.
+-
+-    double offAng = IDF3::CalcAngleRad( startPoint, endPoint );
+-    double d = startPoint.CalcDistance( endPoint ) / 2.0;
+-    double xm   = ( startPoint.x + endPoint.x ) * 0.5;
+-    double ym   = ( startPoint.y + endPoint.y ) * 0.5;
+-
+-    radius = d / sin( angle * M_PI / 180.0 );
+-
+-    if( radius < 0.0 )
+-    {
+-        radius = -radius;
+-    }
+-
+-    // calculate the height of the triangle with base d and hypotenuse r
+-    double dh2 = radius * radius - d * d;
+-
+-    if( dh2 < 0 )
+-    {
+-        // this should only ever happen due to rounding errors when r == d
+-        dh2 = 0;
+-    }
+-
+-    double h = sqrt( dh2 );
+-
+-    if( angle > 0.0 )
+-        offAng += M_PI2;
+-    else
+-        offAng -= M_PI2;
+-
+-    if( ( angle > M_PI ) || ( angle < -M_PI ) )
+-        offAng += M_PI;
+-
+-    center.x = h * cos( offAng ) + xm;
+-    center.y = h * sin( offAng ) + ym;
+-
+-    offsetAngle = IDF3::CalcAngleDeg( center, startPoint );
+-}
+-
+-
+-bool IDF_SEGMENT::IsCircle( void )
+-{
+-    double diff = abs( angle ) - 360.0;
+-
+-    if( ( diff < MIN_ANG ) && ( diff > -MIN_ANG ) )
+-        return true;
+-
+-    return false;
+-}
+-
+-
+-double IDF_SEGMENT::GetMinX( void )
+-{
+-    if( angle == 0.0 )
+-        return std::min( startPoint.x, endPoint.x );
+-
+-    // Calculate the leftmost point of the circle or arc
+-
+-    if( IsCircle() )
+-    {
+-        // if only everything were this easy
+-        return center.x - radius;
+-    }
+-
+-    // cases:
+-    // 1. CCW arc: if offset + included angle >= 180 deg then
+-    // MinX = center.x - radius, otherwise MinX is the
+-    // same as for the case of a line.
+-    // 2. CW arc: if offset + included angle <= -180 deg then
+-    // MinX = center.x - radius, otherwise MinX is the
+-    // same as for the case of a line.
+-
+-    if( angle > 0 )
+-    {
+-        // CCW case
+-        if( ( offsetAngle + angle ) >= 180.0 )
+-        {
+-            return center.x - radius;
+-        }
+-        else
+-        {
+-            return std::min( startPoint.x, endPoint.x );
+-        }
+-    }
+-
+-    // CW case
+-    if( ( offsetAngle + angle ) <= -180.0 )
+-    {
+-        return center.x - radius;
+-    }
+-
+-    return std::min( startPoint.x, endPoint.x );
+-}
+-
+-
+-void IDF_SEGMENT::SwapEnds( void )
+-{
+-    if( IsCircle() )
+-    {
+-        // reverse the direction
+-        angle = -angle;
+-        return;
+-    }
+-
+-    IDF_POINT tmp = startPoint;
+-    startPoint = endPoint;
+-    endPoint = tmp;
+-
+-    if( ( angle < MIN_ANG ) && ( angle > -MIN_ANG ) )
+-        return;         // nothing more to do
+-
+-        // change the direction of the arc
+-        angle = -angle;
+-    // calculate the new offset angle
+-    offsetAngle = IDF3::CalcAngleDeg( center, startPoint );
+-}
+-
+-
+-void IDF_OUTLINE::push( IDF_SEGMENT* item )
+-{
+-    if( !outline.empty() )
+-    {
+-        if( item->IsCircle() )
+-        {
+-            // not allowed
+-            wxString msg = wxT( "INVALID GEOMETRY: a circle is being added to a non-empty outline" );
+-            THROW_IO_ERROR( msg );
+-        }
+-        else
+-        {
+-            if( outline.back()->IsCircle() )
+-            {
+-                // we can't add lines to a circle
+-                wxString msg = wxT( "INVALID GEOMETRY: a line is being added to a circular outline" );
+-                THROW_IO_ERROR( msg );
+-            }
+-            else if( !item->MatchesStart( outline.back()->endPoint ) )
+-            {
+-                // startPoint[N] != endPoint[N -1]
+-                wxString msg = wxT( "INVALID GEOMETRY: disjoint segments" );
+-                THROW_IO_ERROR( msg );
+-            }
+-        }
+-    }
+-
+-    outline.push_back( item );
+-    dir += ( outline.back()->endPoint.x - outline.back()->startPoint.x )
+-    * ( outline.back()->endPoint.y + outline.back()->startPoint.y );
+-}
+
+=== removed file 'pcbnew/exporters/idf_common.h'
+--- pcbnew/exporters/idf_common.h	2014-02-05 09:27:21 +0000
++++ pcbnew/exporters/idf_common.h	1970-01-01 00:00:00 +0000
+@@ -1,290 +0,0 @@
+-/**
+- * @file idf_common.h
+- */
+-
+-/*
+- * This program source code file is part of KiCad, a free EDA CAD application.
+- *
+- * Copyright (C) 2013-2014  Cirilo Bernardo
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * as published by the Free Software Foundation; either version 2
+- * of the License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, you may find one here:
+- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+- * or you may search the http://www.gnu.org website for the version 2 license,
+- * or you may write to the Free Software Foundation, Inc.,
+- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+- */
+-
+-#ifndef IDF_COMMON_H
+-#define IDF_COMMON_H
+-
+-#include <list>
+-
+-#ifndef M_PI
+-#define M_PI 3.1415926535897932384626433832795028841
+-#endif
+-
+-#ifndef M_PI2
+-#define M_PI2 ( M_PI / 2.0 )
+-#endif
+-
+-#ifndef M_PI4
+-#define M_PI4 ( M_PI / 4.0 )
+-#endif
+-
+-// differences in angle smaller than MIN_ANG are considered equal
+-#define MIN_ANG     (0.01)
+-
+-class IDF_POINT;
+-class IDF_SEGMENT;
+-class IDF_DRILL_DATA;
+-class IDF_OUTLINE;
+-class IDF_LIB;
+-
+-namespace IDF3 {
+-    enum KEY_OWNER
+-    {
+-        UNOWNED = 0,        // < either MCAD or ECAD may modify a feature
+-        MCAD,               // < only MCAD may modify a feature
+-        ECAD                // < only ECAD may modify a feature
+-    };
+-
+-    enum KEY_HOLETYPE
+-    {
+-        PIN = 0,            // < drill hole is for a pin
+-        VIA,                // < drill hole is for a via
+-        MTG,                // < drill hole is for mounting
+-        TOOL,               // < drill hole is for tooling
+-        OTHER               // < user has specified a custom type
+-    };
+-
+-    enum KEY_PLATING
+-    {
+-        PTH = 0,            // < Plate-Through Hole
+-        NPTH                // < Non-Plate-Through Hole
+-    };
+-
+-    enum KEY_REFDES
+-    {
+-        BOARD = 0,          // < feature is associated with the board
+-        NOREFDES,           // < feature is associated with a component with no RefDes
+-        PANEL,              // < feature is associated with an IDF panel
+-        REFDES              // < reference designator as assigned by the CAD software
+-    };
+-
+-    // calculate the angle between the horizon and the segment aStartPoint to aEndPoint
+-    double  CalcAngleRad( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
+-    double  CalcAngleDeg( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
+-
+-    // take contiguous elements from 'lines' and stuff them into 'outline'
+-    void GetOutline( std::list<IDF_SEGMENT*>& aLines,
+-                     IDF_OUTLINE& aOutline );
+-
+-#ifdef DEBUG_IDF
+-    // prints out segment information for debug purposes
+-    void PrintSeg( IDF_SEGMENT* aSegment );
+-#endif
+-}
+-
+-
+-/**
+- * @Class IDF_POINT
+- * represents a point
+- */
+-class IDF_POINT
+-{
+-public:
+-    double x;   // < X coordinate
+-    double y;   // < Y coordinate
+-
+-    IDF_POINT()
+-    {
+-        x = 0.0;
+-        y = 0.0;
+-    }
+-
+-    /**
+-     * Function Matches()
+-     * returns true if the given coordinate point is within the given radius
+-     * of the point.
+-     * @param aPoint : coordinates of the point being compared
+-     * @param aRadius : radius within which the points are considered the same
+-     */
+-    bool    Matches( const IDF_POINT& aPoint, double aRadius = 1e-5 );
+-    double  CalcDistance( const IDF_POINT& aPoint ) const;
+-};
+-
+-
+-/**
+- * @Class IDF_SEGMENT
+- * represents a geometry segment as used in IDFv3 outlines
+- */
+-class IDF_SEGMENT
+-{
+-private:
+-    /**
+-     * Function CalcCenterAndRadius()
+-     * Calculates the center, radius, and angle between center and start point given the
+-     * IDF compliant points and included angle.
+-     * @var startPoint, @var endPoint, and @var angle must be set prior as per IDFv3
+-     */
+-    void CalcCenterAndRadius( void );
+-
+-public:
+-    IDF_POINT startPoint;   // starting point in IDF coordinates
+-    IDF_POINT endPoint;     // end point in IDF coordinates
+-    IDF_POINT   center;     // center of an arc or circle; used primarily for calculating min X
+-    double  angle;          // included angle (degrees) according to IDFv3 specification
+-    double  offsetAngle;    // angle between center and start of arc; used to speed up some calcs.
+-    double  radius;         // radius of the arc or circle; used to speed up some calcs.
+-
+-    /**
+-     * Function IDF_SEGMENT()
+-     * initializes the internal variables
+-     */
+-    IDF_SEGMENT();
+-
+-    /**
+-     * Function IDF_SEGMENT( start, end )
+-     * creates a straight segment
+-     */
+-    IDF_SEGMENT( const IDF_POINT& aStartPoint, const IDF_POINT& aEndPoint );
+-
+-    /**
+-     * Function IDF_SEGMENT( start, end )
+-     * creates a straight segment, arc, or circle depending on the angle
+-     * @param aStartPoint : start point (center if using KiCad convention, otherwise IDF convention)
+-     * @param aEndPoint : end point (start of arc if using KiCad convention, otherwise IDF convention)
+-     * @param aAngle : included angle; the KiCad convention is equivalent to the IDF convention
+-     * @param fromKicad : set true if we need to convert from KiCad to IDF convention
+-     */
+-    IDF_SEGMENT( const IDF_POINT& aStartPoint,
+-                 const IDF_POINT& aEndPoint,
+-                 double aAngle,
+-                 bool aFromKicad );
+-
+-    /**
+-     * Function MatchesStart()
+-     * returns true if the given coordinate is within a radius 'rad'
+-     * of the start point.
+-     * @param aPoint : coordinates of the point being compared
+-     * @param aRadius : radius within which the points are considered the same
+-     */
+-    bool MatchesStart( const IDF_POINT& aPoint, double aRadius = 1e-3 );
+-
+-    /**
+-     * Function MatchesEnd()
+-     * returns true if the given coordinate is within a radius 'rad'
+-     * of the end point.
+-     * @param aPoint : coordinates of the point being compared
+-     * @param aRadius : radius within which the points are considered the same
+-     */
+-    bool MatchesEnd( const IDF_POINT& aPoint, double aRadius = 1e-3 );
+-
+-    /**
+-     * Function IsCircle()
+-     * returns true if this segment is a circle
+-     */
+-    bool IsCircle( void );
+-
+-    /**
+-     * Function GetMinX()
+-     * returns the minimum X coordinate of this segment
+-     */
+-    double GetMinX( void );
+-
+-    /**
+-     * Function SwapEnds()
+-     * Swaps the start and end points and alters internal
+-     * variables as necessary for arcs
+-     */
+-    void SwapEnds( void );
+-};
+-
+-
+-/**
+- * @Class IDF_OUTLINE
+- * contains segment and winding information for an IDF outline
+- */
+-class IDF_OUTLINE
+-{
+-private:
+-    double dir;
+-    std::list<IDF_SEGMENT*> outline;
+-
+-public:
+-    IDF_OUTLINE() { dir = 0.0; }
+-    ~IDF_OUTLINE() { Clear(); }
+-
+-    // returns true if the current list of points represents a counterclockwise winding
+-    bool IsCCW( void )
+-    {
+-        if( dir > 0.0 )
+-            return false;
+-
+-        return true;
+-    }
+-
+-    // clears the internal list of outline segments
+-    void Clear( void )
+-    {
+-        dir = 0.0;
+-
+-        while( !outline.empty() )
+-        {
+-            delete outline.front();
+-            outline.pop_front();
+-        }
+-    }
+-
+-    // returns the size of the internal segment list
+-    size_t size( void )
+-    {
+-        return outline.size();
+-    }
+-
+-    // returns true if the internal segment list is empty
+-    bool empty( void )
+-    {
+-        return outline.empty();
+-    }
+-
+-    // return the front() of the internal segment list
+-    IDF_SEGMENT*& front( void )
+-    {
+-        return outline.front();
+-    }
+-
+-    // return the back() of the internal segment list
+-    IDF_SEGMENT*& back( void )
+-    {
+-        return outline.back();
+-    }
+-
+-    // return the begin() iterator of the internal segment list
+-    std::list<IDF_SEGMENT*>::iterator begin( void )
+-    {
+-        return outline.begin();
+-    }
+-
+-    // return the end() iterator of the internal segment list
+-    std::list<IDF_SEGMENT*>::iterator end( void )
+-    {
+-        return outline.end();
+-    }
+-
+-    // push a segment onto the internal list
+-    void push( IDF_SEGMENT* item );
+-};
+-
+-#endif  // IDF_COMMON_H
+
+=== added file 'utils/idftools/idf_examples/test_donut.emn'
+--- utils/idftools/idf_examples/test_donut.emn	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/test_donut.emn	2014-05-31 05:24:59 +0000
+@@ -0,0 +1,45 @@
++.HEADER
++BOARD_FILE 3.0 "Created by some software" 2014/02/01.15:09:15 1
++"test_donut" MM
++.END_HEADER
++
++# The board outline is a simple square with a small hole in it
++.BOARD_OUTLINE ECAD
++1.60000
++0 -100 100 0
++0 -100 -100 0
++0 100 -100 0
++0 100 100 0
++0 -100 100 0
++1 0 0 0
++1 5 0 360
++.END_BOARD_OUTLINE
++
++# This OTHER OUTLINE is a square toroid
++.OTHER_OUTLINE UNOWNED
++MY_DONUT 30 TOP
++0 0 0 0
++0 75 0 360
++1 0 0 0
++1 30 0 360
++.END_OTHER_OUTLINE
++
++# This OTHER OUTLINE is a square with a hole
++.OTHER_OUTLINE UNOWNED
++MY_NOT_DONUT 2 BOTTOM
++0 -50 50 0
++0 -50 -50 0
++0 50 -50 0
++0 50 50 0
++0 -50 50 0
++1 0 0 0
++1 10 0 360
++2 0 50 0
++2 0 75 360
++3 50 0 0
++3 75 0 360
++4 0 -50 0
++4 0 -75 360
++5 -50 0 0
++5 -75 0 360
++.END_OTHER_OUTLINE
+
+=== added file 'utils/idftools/idf_examples/test_donut.emp'
+--- utils/idftools/idf_examples/test_donut.emp	1970-01-01 00:00:00 +0000
++++ utils/idftools/idf_examples/test_donut.emp	2014-05-30 05:32:01 +0000
+@@ -0,0 +1,5 @@
++.HEADER
++LIBRARY_FILE 3.0 "Created by some software" 2014/02/01.15:09:15 1
++.END_HEADER
++
++# This file contains no component outlines
+\ No newline at end of file
+
+=== modified file 'utils/idftools/idf_outlines.cpp'
+--- utils/idftools/idf_outlines.cpp	2014-06-01 16:55:53 +0000
++++ utils/idftools/idf_outlines.cpp	2014-06-04 07:32:16 +0000
+@@ -693,6 +693,10 @@
+     std::list<IDF_SEGMENT*>::iterator bo;
+     std::list<IDF_SEGMENT*>::iterator eo;
+ 
++    if( !aOutline )
++        throw( IDF_ERROR( __FILE__, __FUNCTION__, __LINE__,
++                          "\n* BUG: NULL outline pointer" ) );
++
+     if( aOutline->size() == 1 )
+     {
+         if( !aOutline->front()->IsCircle() )
+
+=== modified file 'utils/idftools/idf_parser.cpp'
+--- utils/idftools/idf_parser.cpp	2014-06-04 17:34:23 +0000
++++ utils/idftools/idf_parser.cpp	2014-06-05 05:00:05 +0000
+@@ -36,6 +36,48 @@
+ using namespace std;
+ using namespace IDF3;
+ 
++
++static bool MatchCompOutline( IDF3_COMP_OUTLINE* aOutlineA, IDF3_COMP_OUTLINE* aOutlineB )
++{
++    if( aOutlineA->GetComponentClass() != aOutlineB->GetComponentClass() )
++        return false;
++
++    if( aOutlineA->OutlinesSize() != aOutlineB->OutlinesSize() )
++        return false;
++
++    // are both outlines empty?
++    if( aOutlineA->OutlinesSize() == 0 )
++        return true;
++
++    IDF_OUTLINE* opA = aOutlineA->GetOutline( 0 );
++    IDF_OUTLINE* opB = aOutlineB->GetOutline( 0 );
++
++    if( opA->size() != opB->size() )
++        return false;
++
++    if( opA->size() == 0 )
++        return true;
++
++    std::list<IDF_SEGMENT*>::iterator olAs = opA->begin();
++    std::list<IDF_SEGMENT*>::iterator olAe = opA->end();
++    std::list<IDF_SEGMENT*>::iterator olBs = opB->begin();
++
++    while( olAs != olAe )
++    {
++        if( !(*olAs)->MatchesStart( (*olBs)->startPoint ) )
++            return false;
++
++        if( !(*olAs)->MatchesEnd( (*olBs)->endPoint ) )
++            return false;
++
++        ++olAs;
++        ++olBs;
++    }
++
++    return true;
++}
++
++
+ /*
+  * CLASS: IDF3_COMP_OUTLINE_DATA
+  * This represents the outline placement
+@@ -285,7 +327,7 @@
+         // component is given a unique RefDes. This class of defect
+         // is one reason IDF does not work well in faithfully
+         // conveying information between ECAD and MCAD.
+-        refdes = token;
++        refdes = aBoard->GetNewRefDes();
+     }
+     else if( CompareToken( "BOARD", token ) )
+     {
+@@ -1297,6 +1339,7 @@
+     userYoff       = 0.0;
+     brdFileVersion = 0;
+     libFileVersion = 0;
++    iRefDes        = 0;
+ 
+     // unlike other outlines which are created as necessary,
+     // the board outline always exists and its parent must
+@@ -1314,6 +1357,18 @@
+     return;
+ }
+ 
++
++const std::string& IDF3_BOARD::GetNewRefDes( void )
++{
++    ostringstream ostr;
++    ostr << "NOREFDESn" << iRefDes++;
++
++    sRefDes = ostr.str();
++
++    return sRefDes;
++}
++
++
+ #ifndef DISABLE_IDF_OWNERSHIP
+ bool IDF3_BOARD::checkComponentOwnership( int aSourceLine, const char* aSourceFunc,
+                                           IDF3_COMPONENT* aComponent )
+@@ -2422,7 +2477,12 @@
+             }
+             else
+             {
+-                delete pout;
++                if( MatchCompOutline( pout, cop ) )
++                {
++                    delete pout;
++                    // everything is fine; the outlines are genuine duplicates
++                    return;
++                }
+ 
+                 ostringstream ostr;
+                 ostr << "invalid IDF library\n";
+@@ -3131,7 +3191,7 @@
+     {
+         ostringstream ostr;
+         ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "():\n";
+-        ostr << "*  board version (" << aVersion << ") must be > 0";
++        ostr << "*  board version (" << aVersion << ") must be >= 0";
+         errormsg = ostr.str();
+ 
+         return false;
+@@ -3155,7 +3215,7 @@
+     {
+         ostringstream ostr;
+         ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "():\n";
+-        ostr << "* library version (" << aVersion << ") must be > 0";
++        ostr << "* library version (" << aVersion << ") must be >= 0";
+         errormsg = ostr.str();
+ 
+         return false;
+@@ -3741,39 +3801,13 @@
+ 
+ // returns a pointer to a component outline object or NULL
+ // if the object doesn't exist
+-IDF3_COMP_OUTLINE* IDF3_BOARD::GetComponentOutline( const std::string aGeomName,
+-                                                    const std::string aPartName,
+-                                                    wxString aFullFileName )
++IDF3_COMP_OUTLINE* IDF3_BOARD::GetComponentOutline( wxString aFullFileName )
+ {
+-    std::ostringstream ostr;
+-    ostr << aGeomName << "_" << aPartName;
+-
+-    IDF3_COMP_OUTLINE* cp = GetComponentOutline( ostr.str() );
+-
+-    if( cp != NULL )
+-        return cp;
+-
+     std::string fname = TO_UTF8( aFullFileName );
+-
+-    cp = new IDF3_COMP_OUTLINE( this );
+-
+-    if( cp == NULL )
+-    {
+-        ostringstream ostr;
+-        ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): \n";
+-        cerr << "* failed to create outline with UID '" << aGeomName << "_";
+-        cerr << aPartName << "'\n";
+-        cerr << "* filename: '" << fname << "'";
+-        errormsg = ostr.str();
+-
+-        return NULL;
+-    }
+-
+     wxFileName idflib( aFullFileName );
+ 
+     if( !idflib.IsOk() )
+     {
+-        delete cp;
+         ostringstream ostr;
+         ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): \n";
+         cerr << "* invalid file name: '" << fname << "'";
+@@ -3784,7 +3818,6 @@
+ 
+     if( !idflib.FileExists() )
+     {
+-        delete cp;
+         ostringstream ostr;
+         ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): \n";
+         cerr << "* no such file: '" << fname  << "'";
+@@ -3795,7 +3828,6 @@
+ 
+     if( !idflib.IsFileReadable() )
+     {
+-        delete cp;
+         ostringstream ostr;
+         ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): \n";
+         cerr << "* cannot read file: '" << fname << "'";
+@@ -3804,6 +3836,24 @@
+         return NULL;
+     }
+ 
++    std::map< std::string, std::string >::iterator itm = uidFileList.find( fname );
++
++    if( itm != uidFileList.end() )
++        return GetComponentOutline( itm->second );
++
++    IDF3_COMP_OUTLINE* cp = new IDF3_COMP_OUTLINE( this );
++
++    if( cp == NULL )
++    {
++        ostringstream ostr;
++        ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "(): \n";
++        cerr << "* failed to create outline\n";
++        cerr << "* filename: '" << fname << "'";
++        errormsg = ostr.str();
++
++        return NULL;
++    }
++
+     std::ifstream model;
+     model.exceptions ( std::ifstream::badbit );
+ 
+@@ -3867,7 +3917,92 @@
+ 
+     model.close();
+ 
+-    return cp;
++    // check the unique ID against the list from library components
++    std::list< std::string >::iterator lsts = uidLibList.begin();
++    std::list< std::string >::iterator lste = uidLibList.end();
++    std::string uid = cp->GetUID();
++    IDF3_COMP_OUTLINE* oldp = NULL;
++
++    while( lsts != lste )
++    {
++        if( ! lsts->compare( uid ) )
++        {
++            oldp = GetComponentOutline( uid );
++
++            if( MatchCompOutline( cp, oldp ) )
++            {
++                // everything is fine; the outlines are genuine duplicates; delete the copy
++                delete cp;
++                // make sure we can find the item via its filename
++                uidFileList.insert( std::pair< std::string, std::string>( fname, uid ) );
++                // return the pointer to the original
++                return oldp;
++            }
++            else
++            {
++                delete cp;
++                ostringstream ostr;
++                ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "():\n";
++                ostr << "* duplicate UID for different Component Outlines: '" << uid << "'\n";
++                ostr << "* original loaded from library, duplicate in current file\n";
++                ostr << "* file: '" << fname << "'";
++
++                errormsg = ostr.str();
++                return NULL;
++            }
++        }
++
++        ++lsts;
++    }
++
++    // if we got this far then any duplicates are from files previously read
++    oldp = GetComponentOutline( uid );
++
++    if( oldp == NULL )
++    {
++        // everything is fine, there are no existing entries
++        uidFileList.insert( std::pair< std::string, std::string>( fname, uid ) );
++        compOutlines.insert( pair<const std::string, IDF3_COMP_OUTLINE*>( uid, cp ) );
++
++        return cp;
++    }
++
++    if( MatchCompOutline( cp, oldp ) )
++    {
++        // everything is fine; the outlines are genuine duplicates; delete the copy
++        delete cp;
++        // make sure we can find the item via its other filename
++        uidFileList.insert( std::pair< std::string, std::string>( fname, uid ) );
++        // return the pointer to the original
++        return oldp;
++    }
++
++    delete cp;
++
++    // determine the file name of the first instance
++    std::map< std::string, std::string >::iterator ufls = uidFileList.begin();
++    std::map< std::string, std::string >::iterator ufle = uidFileList.end();
++    std::string oldfname;
++
++    while( ufls != ufle )
++    {
++        if( ! ufls->second.compare( uid ) )
++        {
++            oldfname = ufls->first;
++            break;
++        }
++
++        ++ufls;
++    }
++
++    ostringstream ostr;
++    ostr << __FILE__ << ":" << __LINE__ << ":" << __FUNCTION__ << "():\n";
++    ostr << "* duplicate UID for different Component Outlines: '" << uid << "'\n";
++    ostr << "* original file: '" << oldfname << "'\n";
++    ostr << "* this file: '" << fname << "'";
++
++    errormsg = ostr.str();
++    return NULL;
+ }
+ 
+ 
+@@ -3940,8 +4075,12 @@
+     libSource.clear();
+     brdDate.clear();
+     libDate.clear();
++    uidFileList.clear();
++    uidLibList.clear();
+     brdFileVersion = 0;
+     libFileVersion = 0;
++    iRefDes = 0;
++    sRefDes.clear();
+ 
+     // delete comment lists
+     noteComments.clear();
+
+=== modified file 'utils/idftools/idf_parser.h'
+--- utils/idftools/idf_parser.h	2014-06-01 16:55:53 +0000
++++ utils/idftools/idf_parser.h	2014-06-03 11:16:11 +0000
+@@ -463,6 +463,8 @@
+ class IDF3_BOARD
+ {
+ private:
++    std::map< std::string, std::string > uidFileList;           // map of files opened and UIDs
++    std::list< std::string > uidLibList;                        // list of UIDs read from a library file
+     std::string errormsg;                                       // string for passing error messages to user
+     std::list< IDF_NOTE* >     notes;                           // IDF notes
+     std::list< std::string >   noteComments;                    // comment list for NOTES section
+@@ -476,6 +478,8 @@
+     IDF3::CAD_TYPE   cadType;
+     IDF3::IDF_UNIT   unit;
+     IDF3::IDF_VERSION   idfVer;                                 // IDF version of Board or Library
++    int iRefDes;                                                // counter for automatically numbered NOREFDES items
++    std::string sRefDes;
+ 
+     std::string idfSource;  // SOURCE string to use when writing BOARD and LIBRARY headers
+     std::string brdSource;  // SOURCE string as retrieved from a BOARD file
+@@ -569,6 +573,8 @@
+     // end user must use only mm in the API.
+     IDF3::IDF_UNIT GetUnit( void );
+ 
++    const std::string& GetNewRefDes( void );
++
+     void SetBoardName( std::string aBoardName );
+     const std::string& GetBoardName( void );
+ 
+@@ -692,9 +698,7 @@
+ 
+     // returns a pointer to a component outline object or NULL
+     // if the object doesn't exist
+-    IDF3_COMP_OUTLINE* GetComponentOutline( const std::string aGeomName,
+-                                            const std::string aPartName,
+-                                            wxString aFullFileName );
++    IDF3_COMP_OUTLINE* GetComponentOutline( wxString aFullFileName );
+ 
+     // returns a pointer to the component outline object with the
+     // unique ID aComponentID
+
+=== modified file 'utils/idftools/vrml_layer.cpp'
+--- utils/idftools/vrml_layer.cpp	2014-05-29 16:04:54 +0000
++++ utils/idftools/vrml_layer.cpp	2014-06-02 09:55:08 +0000
+@@ -23,17 +23,6 @@
+  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+  */
+ 
+-/*
+- * NOTES ON OUTPUT PRECISION:
+- *
+- * If we use %.6f then we have no need for special unit dependent formatting:
+- *
+- *  inch: .0254 microns
+- *  mm:   0.001 microns
+- *  m:    1 micron
+- *
+- */
+-
+ #include <sstream>
+ #include <string>
+ #include <iomanip>
+

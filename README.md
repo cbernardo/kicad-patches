@@ -18,16 +18,23 @@ Notes:
 
 PATCHES:
 
-kicad_idftools.patch:
-	This is a work in progress and is stored here primarily
+kicad_idf_export.patch: [ rev. 4919 ]
+    This patch fixes a number of bugs in the IDF library and
+    reimplements the IDFv3 export using the new IDF library.
+    The old minimal IDF3 support has been removed. The new
+    IDF export was tested by exporting a number of existing
+    projects and manually comparing the resulting IDF files.
+
+DEPRECATED PATCHES:
+
+kicad_idftools.patch: [DEPRECATED; code has been merged into KiCad]
+    This is a work in progress and is stored here primarily
     for backup purposes.  The IDF framework has been rewritten
     to support READ/WRITE.  The improved framework can in principle
     be used for KiCad IDF import/export as well as generic IDF
     tools such as the IDF to VRML converter (work in progress).
 
-DEPRECATED PATCHES:
-
-idf_tools.patch: [ rev. 4657 ]
+idf_tools.patch: [DEPRECATED; code has been merged into KiCad]
     Adds tools for creating IDF component outlines:
         1. idfcyl: creates a cylindrical outline in horizontal or
             vertical orientation and with axial or radial leads.
