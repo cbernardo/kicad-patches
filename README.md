@@ -17,6 +17,15 @@ Notes:
     the file to achieve the desired result.
 
 PATCHES:
+kicad_vrml_export.patch:
+    This patch is a rewrite of the VRML export routine. The
+    supporting code for VRML manipulation has been cleaned
+    up and a few rendering bugs fixed. Some rendering bugs
+    remain but these occur infrequently, are only cosmetic,
+    and their cause is now understood so they can be fixed
+    in a future patch.
+
+DEPRECATED PATCHES:
 
 kicad_idf_export.patch: [ rev. 4919 ]
     This patch fixes a number of bugs in the IDF library and
@@ -24,8 +33,6 @@ kicad_idf_export.patch: [ rev. 4919 ]
     The old minimal IDF3 support has been removed. The new
     IDF export was tested by exporting a number of existing
     projects and manually comparing the resulting IDF files.
-
-DEPRECATED PATCHES:
 
 kicad_idftools.patch: [DEPRECATED; code has been merged into KiCad]
     This is a work in progress and is stored here primarily
