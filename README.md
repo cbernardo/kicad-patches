@@ -17,6 +17,16 @@ Notes:
     the file to achieve the desired result.
 
 PATCHES:
+vrml_layer_pth.patch:
+    This patch adds plate-through holes to the exported VRML file
+    and fixes potential segfaults arising from issues in the
+    GLU tesselator. Known issue: plated holes on the board edge
+    are not rendered well; see the pic_programmer demo project
+    for an example of this. Plated holes on the edge of an
+    interior cutout will produce even uglier results.
+
+DEPRECATED PATCHES:
+
 kicad_vrml_export.patch:
     This patch is a rewrite of the VRML export routine. The
     supporting code for VRML manipulation has been cleaned
@@ -24,8 +34,6 @@ kicad_vrml_export.patch:
     remain but these occur infrequently, are only cosmetic,
     and their cause is now understood so they can be fixed
     in a future patch.
-
-DEPRECATED PATCHES:
 
 kicad_idf_export.patch: [ rev. 4919 ]
     This patch fixes a number of bugs in the IDF library and
