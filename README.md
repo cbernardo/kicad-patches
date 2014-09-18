@@ -17,15 +17,29 @@ Notes:
     the file to achieve the desired result.
 
 PATCHES:
-vrml_layer_pth.patch:
+
+underlay_in_progress.patch: [rev. 5140]
+    This patch adds two Underlay layers to aid in reconstructing
+    PCBs from existing digitized artwork files such as a photograph
+    of an existing board or printouts from a magazine. This is a
+    work in progress and is not yet suitable for inclusion in the
+    main KiCad branch. At this point in time the bitmap2component
+    tool can export an image to the Front Silk layer (the only
+    option in the past) as well as one of two Underlay layers.
+    In pcbnew the Underlay layers are actually rendered on screen
+    last (they're overlays, not underlays) but this patch has been
+    released for users who might want to try the tool in its
+    current condition.
+
+DEPRECATED PATCHES:
+
+vrml_layer_pth.patch: [rev. 4942]
     This patch adds plate-through holes to the exported VRML file
     and fixes potential segfaults arising from issues in the
     GLU tesselator. Known issue: plated holes on the board edge
     are not rendered well; see the pic_programmer demo project
     for an example of this. Plated holes on the edge of an
     interior cutout will produce even uglier results.
-
-DEPRECATED PATCHES:
 
 kicad_vrml_export.patch:
     This patch is a rewrite of the VRML export routine. The
