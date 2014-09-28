@@ -18,6 +18,54 @@ Notes:
 
 PATCHES:
 
+kicad_underlay.tar.bz2: [rev. 5151]:
+    This patch provides two Underlay layers which can be used as an aid
+    in reconstructing PCB artwork. The bitmap2component tool is patched
+    to export a bitmap image to the layer Underlay1 or Underlay2 in
+    addition to the previous Front.SilkS used for logos and other graphics.
+    The layer setup dialog in pcbnew has been patched to introduce the
+    Underlay1 and Underlay2 layers.
+
+    This patch contains changes to wxFormBuilder *.fbp files and their
+    generated *.cpp and *.h files. All these files are provided as is
+    rather than as a patch to ensure the integrity of the files.
+
+    To make the Underlay layers appear as underlays, choose a dark
+    color for each Underlay layer (for example, dark gray and dark
+    yellow or brown). If a bright color is chosen, the layers will
+    appear to be on top of all other layers.
+
+    To apply the patch:
+
+    1. copy the tarball to the top level kicad source directory
+    
+    2. bzr remove bitmap2component/bitmap2cmp_gui_base.fbp \
+    bitmap2component/bitmap2cmp_gui_base.cpp \
+    bitmap2component/bitmap2cmp_gui_base.h \
+    pcbnew/dialogs/dialog_layers_setup_base.fbp \
+    pcbnew/dialogs/dialog_layers_setup_base.cpp \
+    pcbnew/dialogs/dialog_layers_setup_base.h
+
+    3. tar jxvf kicad_underlay.tar.bz2
+    (this should also unpack the replacement *.fbp/*.cpp/*.h files)
+
+    4. bzr add bitmap2component/bitmap2cmp_gui_base.fbp \
+    bitmap2component/bitmap2cmp_gui_base.cpp \
+    bitmap2component/bitmap2cmp_gui_base.h \
+    pcbnew/dialogs/dialog_layers_setup_base.fbp \
+    pcbnew/dialogs/dialog_layers_setup_base.cpp \
+    pcbnew/dialogs/dialog_layers_setup_base.h
+
+    5. bzr patch kicad_underlay.patch
+
+    6. delete the tarball and patch files:
+    rm kicad_underlay.tar.bz2 kicad_underlay.patch
+
+    The source should now be ready to build with the underlay patch.
+
+
+DEPRECATED PATCHES:
+
 underlay_in_progress.patch: [rev. 5140]
     This patch adds two Underlay layers to aid in reconstructing
     PCBs from existing digitized artwork files such as a photograph
@@ -30,8 +78,6 @@ underlay_in_progress.patch: [rev. 5140]
     last (they're overlays, not underlays) but this patch has been
     released for users who might want to try the tool in its
     current condition.
-
-DEPRECATED PATCHES:
 
 vrml_layer_pth.patch: [rev. 4942]
     This patch adds plate-through holes to the exported VRML file
