@@ -1,0 +1,147 @@
+WISHLIST for KiCad - tasks are in order of priority
+In some cases delays on a high priority item may
+permit lower priority items to be finished first.
+===================================================
+
+1. DXF lib: if possible, remove the DXF lib source code from within KiCad.
+   The trick is in (1) identifying the headers and library at build time and
+   (2) ensuring that the library can be installed on platforms such as
+   MSWin and OSX without incurring a big penalty (such as a full installation
+   of LibreCAD).
+
+
+2. Work on dynamic PLUGIN scheme for exporters
+    Includes implementation and documentation plus
+    conversion of at least one exporter.
+
+
+3. 3D model integration:
+	a. 3D viewer:
+		+ add ability to convert STEP/IGES on the fly;
+			conversion *only* supported at request of user.
+			For example, a usr may have VRML and STEP models
+			but only wishes to render the VRML models in 3DViewer
+		+ add ability to convert IDF on the fly; as with STEP/IGES,
+			only at the user's request
+
+    b. VRML Exporter:
+		+ add abilitity to convert STEP/IGES/IDF as requested by user
+		+ add option to remove all board items beyond the board
+			outline such as floating PTH and silkscreen.
+		+ make the edge plated holes look right; this is tricky
+			in the current render code
+
+    c.  Put some sort of persistence into the VRML/X3D/IDF file selector;
+        it is rather annoying to have to select the 'IDF' file each time
+        an IDF file is being specified. If the user specifies one IDF
+        file,  odds are they're only setting IDF files at this time and not
+        VRML files. In a similar fashion,  when the user first sets a
+        VRML file,  odds are they'll continue to set VRML files.
+
+    d.  Think about the 3D file selector and how the text can be changed
+        to be more helpful.  For example,  the text states that the
+        units for offset is INCHES, but with IDF it may be inches or
+        mm depending on whether the user selects MM or THOU units in
+        the IDF board file.
+
+
+4. IDF exporter:
+	a. add ability to use VRML, STEP, and IGES models to create rough
+		IDF outlines, but only at the user's request. The simplest
+		technique would be to project points into the board's plane
+		and calculate a rectangular bounding box; the height used
+		shall be the maximum height; as per IDF specification, no
+		negative offsets shall be allowed; the outline shall always
+		begin at the board's surface.
+
+
+5. STEP assembly output:
+	a. create board
+	b. add STEP and IGES models; if possible preserve color on STEP AP214
+
+    STEP and IGES exporter: MUST be an export plugin (see below);
+    rework all Export routines to integrate them in a better way
+    as in the case of the IO_MGR. In fact it may be possible to
+    extend the IO_MGR (but be extremely careful as this is a
+    core class).
+
+    IGES and STEP are probably best handled with individual
+    enums: FILE3D_STEP and FILE3D_IGES. Rather than using
+    Is3DType(),  use Get3DType() within a switch() block.
+
+    If parts are colored, try to preserve the color for the sake
+    of providing the MCAD user with some visual contrast. STEP
+    assemblies look simply awful when imported into SolidWorks
+    as a uniform gray.
+    
+    IGES: Will need to be implemented from scratch; it is a
+    relatively simple CAD interchange specification but has
+    been considered deprecated since about 2006. On the other
+    hand it is likely that it will continue to be supported by
+    all MCADs for quite a few years yet thanks to legacy
+    support needs.
+    
+    STEP: OpenCascade is unsuitable since it puts all shapes
+    at a single level and creates copies of every occurrence
+    of a shape. This not only wastes vast amounts of memory
+    but the resulting Assembly cannot be reasonably used within
+    a CAD since shapes, parts, and subassemblies do not have the
+    appropriate relationships.
+    
+    STEP support (AP203, AP203e2, AP214e3) shall be implented
+    via the StepCode libraries (license: modified BSD)
+
+6. Manage a Bill of Materials - this is a long-term project
+    which must make use of a database. A Part Number 'fp_text'
+    may be introduced to specify the part number in the module/
+    schematic and used to look up other information in the
+    database including:
+        manufacturer part numbers (remember a 'part' may be
+            an assembly consisting,  for example,  of a socket
+            plus a chip)
+        VRML models
+        IDF models
+        STEP/IGES models
+        Link to documentation
+
+Note: The BoM manager must be able to search for parts and
+dump all required information (footprints, electrical symbol,
+etc) into a local project directory. Information must also
+be tracked via MD5 hashes to manage changes.
+
+
+
+
+
+========================
+     FINISHED ITEMS
+========================
+
+1. [DONE] [ Mitch from hackvana ]
+	- wants a full-color graphical underlay to aid in migration from old
+		or proprietary tools. In some cases scans or photos of old
+		boards or printouts may be available but not the original
+		CAD files or there may not be an importer for the CAD file.
+
+	- option: use a vectorizer and feature recognition to convert to
+		lines, filled zones, etc. This may be useful especially
+		for multilayer boards. Mitch is not so keen on this option
+		for 2 reasons: (1) there is no telling beforehand what
+		a user might employ the underlay for, and (2) it will
+		take a lot longer to code and test a vectorizer.
+
+	NOTES:
+	1. Easiest implementation consists of:
+		+ modify bitmap tool to write object to 'Underlay' layer
+                  rather than 'F.SilkS'. The underlay layer doesn't exist
+                  of course, so the main pcbnew code must be touched to
+                  reserve one of the technical layers.
+
+		+ Modify pcbnew to:
+			- reserve an 'Underlay' layer
+			- render 'Underlay' before rendering anything else
+
+		+ Modifications related to 'Underlay':
+			- must never print
+			- must never plot
+

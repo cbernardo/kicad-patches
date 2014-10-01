@@ -16,6 +16,11 @@ Notes:
     pcbnew/CMakeLists.txt. In such cases you may manually edit
     the file to achieve the desired result.
 
+Miscellaneous files:
+    'cb_kicad_wishlist' is a backup of my personal wishlist for
+    improvements to kicad. I will eventually work on the issues
+    on the list as time allows.
+
 PATCHES:
 
 kicad_underlay.tar.bz2: [rev. 5151]:
